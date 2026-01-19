@@ -24,17 +24,13 @@
 Shows differences between the buffer in memory and the saved file."
   (interactive)
   (let ((file-name (buffer-file-name)))
-    
     (unless file-name
       (error "Current buffer is not visiting a file"))
-    
     (unless (file-exists-p file-name)
       (error "File does not exist on disk"))
-    
     ;; Inform user if buffer has no unsaved changes
     (unless (buffer-modified-p)
       (message "Buffer has no unsaved changes (ediff will show no differences)"))
-    
     ;; Run ediff with current buffer and file on disk
     (let* ((file-buffer (find-file-noselect file-name t))
            (cleanup-fn nil))
@@ -67,17 +63,13 @@ Shows differences between the local buffer and the committed version in git."
                          git-revision 
                          (file-relative-name file-name 
                                             (vc-git-root file-name)))))
-    
     (unless file-name
       (error "Current buffer is not visiting a file"))
-    
     (unless (vc-git-root file-name)
       (error "Current file is not in a git repository"))
-    
     ;; Get HEAD version and save to temp file
     (with-temp-file temp-file
       (shell-command git-cmd (current-buffer)))
-    
     ;; Run ediff with current buffer and HEAD version
     (let* ((temp-buffer (find-file-noselect temp-file))
            (cleanup-fn nil))
@@ -115,21 +107,16 @@ Shows differences between the last commit and the commit before it."
                                             (vc-git-root file-name)))
          (git-cmd-head (format "git show %s:%s" head-revision file-rel-name))
          (git-cmd-prev (format "git show %s:%s" prev-revision file-rel-name)))
-    
     (unless file-name
       (error "Current buffer is not visiting a file"))
-    
     (unless (vc-git-root file-name)
       (error "Current file is not in a git repository"))
-    
     ;; Get HEAD version
     (with-temp-file temp-file-head
       (shell-command git-cmd-head (current-buffer)))
-    
     ;; Get previous version (HEAD~1)
     (with-temp-file temp-file-prev
       (shell-command git-cmd-prev (current-buffer)))
-    
     ;; Run ediff with HEAD and previous version
     (let* ((temp-buffer-prev (find-file-noselect temp-file-prev))
            (temp-buffer-head (find-file-noselect temp-file-head))
