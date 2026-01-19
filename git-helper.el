@@ -25,15 +25,15 @@ Shows differences between the buffer in memory and the saved file."
   (interactive)
   (let ((file-name (buffer-file-name)))
     
-    (if (not file-name)
-        (error "Current buffer is not visiting a file"))
+    (unless file-name
+      (error "Current buffer is not visiting a file"))
     
-    (if (not (file-exists-p file-name))
-        (error "File does not exist on disk"))
+    (unless (file-exists-p file-name)
+      (error "File does not exist on disk"))
     
-    ;; Check if buffer is modified
-    (if (not (buffer-modified-p))
-        (message "Buffer has no unsaved changes"))
+    ;; Inform user if buffer has no unsaved changes
+    (unless (buffer-modified-p)
+      (message "Buffer has no unsaved changes (ediff will show no differences)"))
     
     ;; Run ediff with current buffer and file on disk
     (let* ((file-buffer (find-file-noselect file-name t))
@@ -68,11 +68,11 @@ Shows differences between the local buffer and the committed version in git."
                          (file-relative-name file-name 
                                             (vc-git-root file-name)))))
     
-    (if (not file-name)
-        (error "Current buffer is not visiting a file"))
+    (unless file-name
+      (error "Current buffer is not visiting a file"))
     
-    (if (not (vc-git-root file-name))
-        (error "Current file is not in a git repository"))
+    (unless (vc-git-root file-name)
+      (error "Current file is not in a git repository"))
     
     ;; Get HEAD version and save to temp file
     (with-temp-file temp-file
@@ -116,11 +116,11 @@ Shows differences between the last commit and the commit before it."
          (git-cmd-head (format "git show %s:%s" head-revision file-rel-name))
          (git-cmd-prev (format "git show %s:%s" prev-revision file-rel-name)))
     
-    (if (not file-name)
-        (error "Current buffer is not visiting a file"))
+    (unless file-name
+      (error "Current buffer is not visiting a file"))
     
-    (if (not (vc-git-root file-name))
-        (error "Current file is not in a git repository"))
+    (unless (vc-git-root file-name)
+      (error "Current file is not in a git repository"))
     
     ;; Get HEAD version
     (with-temp-file temp-file-head
