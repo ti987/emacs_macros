@@ -32,11 +32,18 @@ Shows differences between the buffer in memory and the saved file."
     (unless (buffer-modified-p)
       (message "Buffer has no unsaved changes (ediff will show no differences)"))
     ;; Create a temporary buffer with file contents from disk
-    (let* ((file-buffer (generate-new-buffer (concat "*disk-" (file-name-nondirectory file-name) "*")))
+    (let* ((file-buffer (generate-new-buffer (concat "*disk-" 
+                                                      (or (file-name-nondirectory file-name) 
+                                                          "file") 
+                                                      "*")))
            (cleanup-fn nil))
       ;; Load file contents from disk into the temporary buffer
       (with-current-buffer file-buffer
-        (insert-file-contents file-name))
+        (condition-case err
+            (insert-file-contents file-name)
+          (error
+           (kill-buffer file-buffer)
+           (error "Failed to read file from disk: %s" (error-message-string err)))))
       (setq cleanup-fn
             `(lambda ()
                (when (buffer-live-p ,file-buffer)
