@@ -31,9 +31,12 @@ Shows differences between the buffer in memory and the saved file."
     ;; Inform user if buffer has no unsaved changes
     (unless (buffer-modified-p)
       (message "Buffer has no unsaved changes (ediff will show no differences)"))
-    ;; Run ediff with current buffer and file on disk
-    (let* ((file-buffer (find-file-noselect file-name t))
+    ;; Create a temporary buffer with file contents from disk
+    (let* ((file-buffer (generate-new-buffer (concat "*disk-" (file-name-nondirectory file-name) "*")))
            (cleanup-fn nil))
+      ;; Load file contents from disk into the temporary buffer
+      (with-current-buffer file-buffer
+        (insert-file-contents file-name nil nil nil t))
       (setq cleanup-fn
             `(lambda ()
                (when (buffer-live-p ,file-buffer)
