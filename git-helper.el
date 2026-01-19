@@ -45,10 +45,12 @@ Shows differences between the local buffer and the committed version in git."
            (cleanup-fn nil))
       (setq cleanup-fn
             `(lambda ()
-               (when (buffer-live-p ,temp-buffer)
-                 (kill-buffer ,temp-buffer))
                (when (file-exists-p ,temp-file)
                  (delete-file ,temp-file))
+               (when (buffer-live-p ,temp-buffer)
+                 (with-current-buffer ,temp-buffer
+                   (set-buffer-modified-p nil))
+                 (kill-buffer ,temp-buffer))
                (remove-hook 'ediff-quit-hook ',cleanup-fn)))
       (add-hook 'ediff-quit-hook cleanup-fn nil t)
       (ediff-buffers (current-buffer) temp-buffer))))
@@ -96,14 +98,18 @@ Shows differences between the last commit and the commit before it."
            (cleanup-fn nil))
       (setq cleanup-fn
             `(lambda ()
-               (when (buffer-live-p ,temp-buffer-head)
-                 (kill-buffer ,temp-buffer-head))
-               (when (buffer-live-p ,temp-buffer-prev)
-                 (kill-buffer ,temp-buffer-prev))
                (when (file-exists-p ,temp-file-head)
                  (delete-file ,temp-file-head))
                (when (file-exists-p ,temp-file-prev)
                  (delete-file ,temp-file-prev))
+               (when (buffer-live-p ,temp-buffer-head)
+                 (with-current-buffer ,temp-buffer-head
+                   (set-buffer-modified-p nil))
+                 (kill-buffer ,temp-buffer-head))
+               (when (buffer-live-p ,temp-buffer-prev)
+                 (with-current-buffer ,temp-buffer-prev
+                   (set-buffer-modified-p nil))
+                 (kill-buffer ,temp-buffer-prev))
                (remove-hook 'ediff-quit-hook ',cleanup-fn)))
       (add-hook 'ediff-quit-hook cleanup-fn nil t)
       (ediff-buffers temp-buffer-prev temp-buffer-head))))
