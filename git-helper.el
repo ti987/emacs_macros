@@ -52,7 +52,7 @@ Shows differences between the local buffer and the committed version in git."
                    (set-buffer-modified-p nil))
                  (kill-buffer ,temp-buffer))
                (remove-hook 'ediff-quit-hook ',cleanup-fn)))
-      (add-hook 'ediff-quit-hook cleanup-fn nil t)
+      (add-hook 'ediff-quit-hook cleanup-fn)
       (ediff-buffers (current-buffer) temp-buffer))))
 
 
@@ -111,7 +111,7 @@ Shows differences between the last commit and the commit before it."
                    (set-buffer-modified-p nil))
                  (kill-buffer ,temp-buffer-prev))
                (remove-hook 'ediff-quit-hook ',cleanup-fn)))
-      (add-hook 'ediff-quit-hook cleanup-fn nil t)
+      (add-hook 'ediff-quit-hook cleanup-fn)
       (ediff-buffers temp-buffer-prev temp-buffer-head))))
 
 (provide 'git-helper)
