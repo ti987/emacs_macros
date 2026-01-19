@@ -7,9 +7,47 @@
 ;;
 ;; Interactive commands:
 ;;
+;; (defun git-ediff-buffer-with-file ()
 ;; (defun git-ediff-buffer-with-head ()
 ;; (defun git-ediff-head-with-previous ()
 ;;
+
+;;
+;; git-ediff-buffer-with-file
+;;
+;; Run ediff to compare the current buffer with the file on disk.
+;; This is useful to see what unsaved changes have been made in the buffer.
+;;
+
+(defun git-ediff-buffer-with-file ()
+  "Compare current buffer with its file on disk using ediff.
+Shows differences between the buffer in memory and the saved file."
+  (interactive)
+  (let ((file-name (buffer-file-name)))
+    
+    (if (not file-name)
+        (error "Current buffer is not visiting a file"))
+    
+    (if (not (file-exists-p file-name))
+        (error "File does not exist on disk"))
+    
+    ;; Check if buffer is modified
+    (if (not (buffer-modified-p))
+        (message "Buffer has no unsaved changes"))
+    
+    ;; Run ediff with current buffer and file on disk
+    (let* ((file-buffer (find-file-noselect file-name t))
+           (cleanup-fn nil))
+      (setq cleanup-fn
+            `(lambda ()
+               (when (buffer-live-p ,file-buffer)
+                 (with-current-buffer ,file-buffer
+                   (set-buffer-modified-p nil))
+                 (kill-buffer ,file-buffer))
+               (remove-hook 'ediff-quit-hook ',cleanup-fn)))
+      (add-hook 'ediff-quit-hook cleanup-fn)
+      (ediff-buffers (current-buffer) file-buffer))))
+
 
 ;;
 ;; git-ediff-buffer-with-head
