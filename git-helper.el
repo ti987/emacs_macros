@@ -41,18 +41,17 @@ Shows differences between the local buffer and the committed version in git."
       (shell-command git-cmd (current-buffer)))
     
     ;; Run ediff with current buffer and HEAD version
-    (let ((temp-buffer (find-file-noselect temp-file)))
-      (ediff-buffers (current-buffer) temp-buffer)
-      
-      ;; Clean up temp file and buffer after ediff exits
-      (add-hook 'ediff-quit-hook
-                `(lambda ()
-                   (when (buffer-live-p ,temp-buffer)
-                     (kill-buffer ,temp-buffer))
-                   (when (file-exists-p ,temp-file)
-                     (delete-file ,temp-file))
-                   (remove-hook 'ediff-quit-hook this-command))
-                nil t))))
+    (let* ((temp-buffer (find-file-noselect temp-file))
+           (cleanup-fn nil))
+      (setq cleanup-fn
+            `(lambda ()
+               (when (buffer-live-p ,temp-buffer)
+                 (kill-buffer ,temp-buffer))
+               (when (file-exists-p ,temp-file)
+                 (delete-file ,temp-file))
+               (remove-hook 'ediff-quit-hook ',cleanup-fn)))
+      (add-hook 'ediff-quit-hook cleanup-fn nil t)
+      (ediff-buffers (current-buffer) temp-buffer))))
 
 
 ;;
@@ -92,22 +91,21 @@ Shows differences between the last commit and the commit before it."
       (shell-command git-cmd-prev (current-buffer)))
     
     ;; Run ediff with HEAD and previous version
-    (let ((temp-buffer-prev (find-file-noselect temp-file-prev))
-          (temp-buffer-head (find-file-noselect temp-file-head)))
-      (ediff-buffers temp-buffer-prev temp-buffer-head)
-      
-      ;; Clean up temp files and buffers after ediff exits
-      (add-hook 'ediff-quit-hook
-                `(lambda ()
-                   (when (buffer-live-p ,temp-buffer-head)
-                     (kill-buffer ,temp-buffer-head))
-                   (when (buffer-live-p ,temp-buffer-prev)
-                     (kill-buffer ,temp-buffer-prev))
-                   (when (file-exists-p ,temp-file-head)
-                     (delete-file ,temp-file-head))
-                   (when (file-exists-p ,temp-file-prev)
-                     (delete-file ,temp-file-prev))
-                   (remove-hook 'ediff-quit-hook this-command))
-                nil t))))
+    (let* ((temp-buffer-prev (find-file-noselect temp-file-prev))
+           (temp-buffer-head (find-file-noselect temp-file-head))
+           (cleanup-fn nil))
+      (setq cleanup-fn
+            `(lambda ()
+               (when (buffer-live-p ,temp-buffer-head)
+                 (kill-buffer ,temp-buffer-head))
+               (when (buffer-live-p ,temp-buffer-prev)
+                 (kill-buffer ,temp-buffer-prev))
+               (when (file-exists-p ,temp-file-head)
+                 (delete-file ,temp-file-head))
+               (when (file-exists-p ,temp-file-prev)
+                 (delete-file ,temp-file-prev))
+               (remove-hook 'ediff-quit-hook ',cleanup-fn)))
+      (add-hook 'ediff-quit-hook cleanup-fn nil t)
+      (ediff-buffers temp-buffer-prev temp-buffer-head))))
 
 (provide 'git-helper)
