@@ -36,7 +36,7 @@ Shows differences between the buffer in memory and the saved file."
            (cleanup-fn nil))
       ;; Load file contents from disk into the temporary buffer
       (with-current-buffer file-buffer
-        (insert-file-contents file-name nil nil nil t))
+        (insert-file-contents file-name))
       (setq cleanup-fn
             `(lambda ()
                (when (buffer-live-p ,file-buffer)
