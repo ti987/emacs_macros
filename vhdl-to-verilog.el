@@ -283,7 +283,7 @@ STR is the string to split."
           (let ((trimmed (replace-regexp-in-string "^\\s-+" "" current-entry)))
             (setq trimmed (replace-regexp-in-string "\\s-+$" "" trimmed))
             (when (> (length trimmed) 0)
-              (push current-entry entries)))
+              (push trimmed entries)))
           (setq current-entry ""))
          (t
           (setq current-entry (concat current-entry char)))))
@@ -293,7 +293,7 @@ STR is the string to split."
     (let ((trimmed (replace-regexp-in-string "^\\s-+" "" current-entry)))
       (setq trimmed (replace-regexp-in-string "\\s-+$" "" trimmed))
       (when (> (length trimmed) 0)
-        (push current-entry entries)))
+        (push trimmed entries)))
     
     (nreverse entries)))
 
