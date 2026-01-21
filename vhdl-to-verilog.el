@@ -153,4 +153,191 @@ PORT-LIST is a list of (signal-name direction type-range) tuples."
     
     output))
 
+(defun vhdl-instantiation-to-verilog ()
+  "Convert VHDL component/entity instantiation to Verilog module instantiation.
+The function works on the current region or buffer, searching for a VHDL
+instantiation and converting it to Verilog syntax.
+
+Conversion rules:
+VHDL:
+  inst_name : entity work.module_name
+    generic map (
+      PARAM1 => value1,
+      PARAM2 => value2
+    )
+    port map (
+      port1 => signal1,
+      port2 => signal2
+    );
+
+Verilog:
+  module_name #(
+    .PARAM1(value1),
+    .PARAM2(value2)
+  ) inst_name (
+    .port1(signal1),
+    .port2(signal2)
+  );
+
+Also handles component instantiation:
+  inst_name : component_name
+    port map (...);
+"
+  (interactive)
+  (save-excursion
+    (let ((inst-name "")
+          (module-name "")
+          (generic-list '())
+          (port-list '())
+          (start-pos (point-min))
+          (end-pos (point-max)))
+      
+      ;; Use region if active
+      (when (use-region-p)
+        (setq start-pos (region-beginning))
+        (setq end-pos (region-end)))
+      
+      (goto-char start-pos)
+      
+      ;; Find instantiation: inst_name : [entity work.]module_name or inst_name : component module_name
+      (if (re-search-forward "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\)\\s-*:\\s-*\\(?:entity\\s-+\\(?:work\\.\\)?\\|component\\s-+\\)?\\([a-zA-Z][a-zA-Z0-9_]*\\)" end-pos t)
+          (progn
+            (setq inst-name (match-string 1))
+            (setq module-name (match-string 2))
+            
+            ;; Look for generic map (optional)
+            (when (re-search-forward "^\\s-*generic\\s-+map\\s-*(" end-pos t)
+              (setq generic-list (vhdl-parse-map-clause end-pos)))
+            
+            ;; Look for port map
+            (when (re-search-forward "^\\s-*port\\s-+map\\s-*(" end-pos t)
+              (setq port-list (vhdl-parse-map-clause end-pos)))
+            
+            ;; Generate Verilog instantiation
+            (let ((verilog-output (vhdl-generate-verilog-instantiation 
+                                   inst-name module-name generic-list port-list)))
+              ;; Insert at point or replace selection
+              (goto-char start-pos)
+              (if (use-region-p)
+                  (delete-region (region-beginning) (region-end)))
+              (insert verilog-output)))
+        (message "Could not find VHDL instantiation")))))
+
+(defun vhdl-parse-map-clause (end-pos)
+  "Parse a VHDL generic map or port map clause.
+Returns a list of (name => value) associations.
+END-POS is the end position to search within."
+  (let ((map-list '())
+        (paren-depth 1)
+        (clause-start (point))
+        (clause-end nil))
+    
+    ;; Find matching closing parenthesis
+    (while (and (> paren-depth 0) (< (point) end-pos))
+      (cond
+       ((looking-at "(")
+        (setq paren-depth (1+ paren-depth))
+        (forward-char 1))
+       ((looking-at ")")
+        (setq paren-depth (1- paren-depth))
+        (if (= paren-depth 0)
+            (setq clause-end (point)))
+        (forward-char 1))
+       (t (forward-char 1))))
+    
+    ;; Parse the clause content
+    (when clause-end
+      (goto-char clause-start)
+      (let ((clause-str (buffer-substring-no-properties clause-start clause-end)))
+        ;; Split by commas (but not commas inside parentheses)
+        (let ((entries (vhdl-split-map-entries clause-str)))
+          (dolist (entry entries)
+            (when (string-match "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\)\\s-*=>\\s-*\\(.+\\)\\s-*$" entry)
+              (let ((name (match-string 1 entry))
+                    (value (match-string 2 entry)))
+                ;; Trim whitespace from value
+                (setq value (replace-regexp-in-string "^\\s-+" "" value))
+                (setq value (replace-regexp-in-string "\\s-+$" "" value))
+                (push (cons name value) map-list)))))))
+    
+    (nreverse map-list)))
+
+(defun vhdl-split-map-entries (str)
+  "Split a map clause string by commas, respecting parentheses nesting.
+STR is the string to split."
+  (let ((entries '())
+        (current-entry "")
+        (paren-depth 0)
+        (i 0))
+    (while (< i (length str))
+      (let ((char (substring str i (1+ i))))
+        (cond
+         ((string= char "(")
+          (setq paren-depth (1+ paren-depth))
+          (setq current-entry (concat current-entry char)))
+         ((string= char ")")
+          (setq paren-depth (1- paren-depth))
+          (setq current-entry (concat current-entry char)))
+         ((and (string= char ",") (= paren-depth 0))
+          ;; Found a top-level comma, save current entry
+          (let ((trimmed (replace-regexp-in-string "^\\s-+" "" current-entry)))
+            (setq trimmed (replace-regexp-in-string "\\s-+$" "" trimmed))
+            (when (> (length trimmed) 0)
+              (push current-entry entries)))
+          (setq current-entry ""))
+         (t
+          (setq current-entry (concat current-entry char)))))
+      (setq i (1+ i)))
+    
+    ;; Add the last entry
+    (let ((trimmed (replace-regexp-in-string "^\\s-+" "" current-entry)))
+      (setq trimmed (replace-regexp-in-string "\\s-+$" "" trimmed))
+      (when (> (length trimmed) 0)
+        (push current-entry entries)))
+    
+    (nreverse entries)))
+
+(defun vhdl-generate-verilog-instantiation (inst-name module-name generic-list port-list)
+  "Generate Verilog instantiation from parsed VHDL instantiation components.
+INST-NAME is the instance name.
+MODULE-NAME is the module/component name.
+GENERIC-LIST is a list of (param . value) pairs.
+PORT-LIST is a list of (port . signal) pairs."
+  (let ((output "")
+        (indent "  "))
+    
+    ;; Module name with optional parameters
+    (if generic-list
+        (progn
+          (setq output (concat output module-name " #(\n"))
+          (let ((param-count (length generic-list))
+                (current-param 0))
+            (dolist (param generic-list)
+              (setq current-param (1+ current-param))
+              (let* ((param-name (car param))
+                     (param-value (cdr param))
+                     (comma (if (< current-param param-count) "," "")))
+                (setq output (concat output (format "%s.%s(%s)%s\n" 
+                                                    indent param-name param-value comma)))))
+          (setq output (concat output ") " inst-name " (\n")))
+      ;; No parameters
+      (setq output (concat output module-name " " inst-name " (\n")))
+    
+    ;; Port connections
+    (when port-list
+      (let ((port-count (length port-list))
+            (current-port 0))
+        (dolist (port port-list)
+          (setq current-port (1+ current-port))
+          (let* ((port-name (car port))
+                 (signal-name (cdr port))
+                 (comma (if (< current-port port-count) "," "")))
+            (setq output (concat output (format "%s.%s(%s)%s\n" 
+                                                indent port-name signal-name comma)))))))
+    
+    ;; Close instantiation
+    (setq output (concat output ");\n"))
+    
+    output))
+
 (provide 'vhdl-to-verilog)
