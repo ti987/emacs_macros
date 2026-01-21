@@ -255,7 +255,8 @@ END-POS is the end position to search within."
           (dolist (entry entries)
             ;; Match port/parameter name (with optional array notation) => value
             ;; Pattern matches: name or name(index) or name(index1)(index2) etc.
-            (when (string-match "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\(?:([-+]?[0-9]+)\\)*\\)\\s-*=>\\s-*\\(.+\\)\\s-*$" entry)
+            ;; Array indices are non-negative integers
+            (when (string-match "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\(?:([0-9]+)\\)*\\)\\s-*=>\\s-*\\(.+\\)\\s-*$" entry)
               (let ((name (match-string 1 entry))
                     (value (match-string 2 entry)))
                 ;; Trim whitespace from value
