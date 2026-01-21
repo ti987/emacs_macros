@@ -200,6 +200,7 @@ Also handles component instantiation:
       (goto-char start-pos)
       
       ;; Find instantiation: inst_name : [entity work.]module_name or inst_name : component module_name
+      ;; The pattern also handles case where just "inst_name : module_name" is used
       (if (re-search-forward "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\)\\s-*:\\s-*\\(?:entity\\s-+\\(?:work\\.\\)?\\|component\\s-+\\)?\\([a-zA-Z][a-zA-Z0-9_]*\\)" end-pos t)
           (progn
             (setq inst-name (match-string 1))
@@ -252,7 +253,9 @@ END-POS is the end position to search within."
         ;; Split by commas (but not commas inside parentheses)
         (let ((entries (vhdl-split-map-entries clause-str)))
           (dolist (entry entries)
-            (when (string-match "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\)\\s-*=>\\s-*\\(.+\\)\\s-*$" entry)
+            ;; Match port/parameter name (with optional array notation) => value
+            ;; Pattern matches: name or name(index) or name(index1)(index2) etc.
+            (when (string-match "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\(?:([-+]?[0-9]+)\\)*\\)\\s-*=>\\s-*\\(.+\\)\\s-*$" entry)
               (let ((name (match-string 1 entry))
                     (value (match-string 2 entry)))
                 ;; Trim whitespace from value
