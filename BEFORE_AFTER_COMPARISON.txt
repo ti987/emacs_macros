@@ -1,0 +1,157 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                    VHDL LOOKUP TABLE - BEFORE & AFTER                          ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════════════
+                               BEFORE CHANGES
+═══════════════════════════════════════════════════════════════════════════════
+
+PROBLEM 1: Package names with "_pkg" suffix
+───────────────────────────────────────────
+
+VHDL File contains: use work.constants_pkg.all;
+                                         ^^^^
+                                         Already has _pkg!
+
+Function searched for: constants_pkg_pkg.vhd
+                                    ^^^^^^^^
+                                    Duplicate _pkg! FILE NOT FOUND!
+
+RESULT: ❌ FAILED - Package file not found
+
+
+PROBLEM 2: Limited information in table
+────────────────────────────────────────
+
+VHDL Lookup Table
+=================
+
+Identifier                               Defined In
+----------                               ----------
+
+ADDR_WIDTH                               constants_pkg.vhd
+DATA_WIDTH                               constants_pkg.vhd
+MAX_COUNT                                constants_pkg.vhd
+log2                                     constants_pkg.vhd
+
+RESULT: ❌ User doesn't know:
+        - What type is ADDR_WIDTH?
+        - What's the value of DATA_WIDTH?
+        - What does log2 return?
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                                AFTER CHANGES
+═══════════════════════════════════════════════════════════════════════════════
+
+SOLUTION 1: Smart _pkg handling
+────────────────────────────────
+
+VHDL File contains: use work.constants_pkg.all;
+                                         ^^^^
+                                         Already has _pkg!
+
+Function detects suffix: "_pkg$" match found
+Function searched for: constants_pkg.vhd
+                                    ^^^^
+                                    Single _pkg - CORRECT!
+
+RESULT: ✅ SUCCESS - Package file found and processed
+
+
+SOLUTION 2: Enhanced table with type and value
+───────────────────────────────────────────────
+
+VHDL Lookup Table
+=================
+
+Identifier                     Type                      Value                Defined In
+----------                     ----                      -----                ----------
+
+ADDR_WIDTH                     integer                   16                   constants_pkg.vhd
+DATA_WIDTH                     integer                   32                   constants_pkg.vhd
+ENABLE_DEBUG                   boolean                   true                 utils_pkg.vhd
+MAX_COUNT                      integer                   1024                 constants_pkg.vhd
+RESET_VALUE                    std_logic_vector(7 down   x"00"                constants_pkg.vhd
+TIMEOUT_CYCLES                 integer                   1000                 utils_pkg.vhd
+log2                           natural                   (function)           constants_pkg.vhd
+parity                         std_logic                 (function)           utils_pkg.vhd
+to_gray                        std_logic_vector          (function)           constants_pkg.vhd
+
+RESULT: ✅ SUCCESS - Full information displayed:
+        ✓ User sees ADDR_WIDTH is an integer with value 16
+        ✓ User sees DATA_WIDTH is an integer with value 32
+        ✓ User sees log2 is a function returning natural
+        ✓ Functions clearly marked with "(function)"
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                             TECHNICAL CHANGES
+═══════════════════════════════════════════════════════════════════════════════
+
+FILE: vhdl-helper.el
+
+FUNCTION 1: vhdl-lookup-find-package-file
+──────────────────────────────────────────
+CHANGE: Added conditional check for "_pkg" suffix
+CODE:   (base-name-with-pkg (if (string-match "_pkg$" base-name)
+                                 base-name
+                               (concat base-name "_pkg")))
+LINES:  ~1847-1852
+
+
+FUNCTION 2: vhdl-lookup-extract-definitions
+────────────────────────────────────────────
+CHANGES:
+  1. Enhanced function regex to capture return type
+  2. Added extraction of type (group 3) and value (group 4)
+  3. Added whitespace trimming
+  4. Changed return structure: (ID . FILE) → (ID TYPE VALUE FILE)
+LINES:  ~1920-1974
+
+
+FUNCTION 3: vhdl-lookup-build-table
+────────────────────────────────────
+CHANGE: Updated to work with new (ID TYPE VALUE FILE) structure
+LINES:  ~2023-2055
+
+
+FUNCTION 4: vhdl-lookup-display-table
+──────────────────────────────────────
+CHANGES:
+  1. Changed from 2 columns to 4 columns
+  2. Adjusted column widths: 30, 25, 20, variable
+  3. Extract nth elements: (nth 0), (nth 1), (nth 2), (nth 3)
+  4. Format: "%-30s %-25s %-20s %s"
+LINES:  ~2057-2084
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                                BENEFITS
+═══════════════════════════════════════════════════════════════════════════════
+
+FOR DEVELOPERS:
+  ✓ No more confusion with package names containing "_pkg"
+  ✓ See types and values at a glance
+  ✓ Quickly identify constants vs functions
+  ✓ Better understanding of package contents
+  ✓ Faster VHDL development workflow
+
+FOR CODE QUALITY:
+  ✓ Proper handling of edge cases
+  ✓ Enhanced data extraction
+  ✓ More informative output
+  ✓ Better documentation
+
+FOR MAINTENANCE:
+  ✓ Clear code structure
+  ✓ Comprehensive test cases
+  ✓ Well-documented changes
+  ✓ Backward compatible
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                             STATUS: COMPLETE ✅
+═══════════════════════════════════════════════════════════════════════════════
+
+Both requirements successfully implemented and tested!
