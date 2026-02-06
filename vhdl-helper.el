@@ -1804,4 +1804,250 @@ generate state type declaration. Comments are above 'when' clauses."
 
 ;(toggle-debug-on-error)
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; VHDL Lookup Table Functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun vhdl-lookup-extract-use-packages ()
+  "Extract package names from 'use work.PKG.all' statements in current buffer.
+Returns a list of package names (without the _pkg suffix)."
+  (let ((pkg-list '())
+        (use-regexp (concat vhdl-re-lead-sp0
+                           "\\<use\\>"
+                           re-wspace1
+                           "\\<work\\>"
+                           re-wspace0
+                           "\\."
+                           re-wspace0
+                           vhdl-re-id  ; package name
+                           re-wspace0
+                           "\\."))
+        pkg-name)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward use-regexp nil t)
+        (setq pkg-name (match-string-no-properties 1))
+        (unless (member pkg-name pkg-list)
+          (push pkg-name pkg-list))))
+    (nreverse pkg-list)))
+
+(defun vhdl-lookup-find-package-file (pkg-name)
+  "Find package file for PKG-NAME.
+Searches for 'pkg-name_pkg.vhd' or 'pkg-name_pkg.vhdl' in:
+1. Existing buffers
+2. Same directory as current buffer
+3. Current directory's subdirectories
+4. Parent directory
+5. Parent's subdirectories
+Returns the full file path or nil if not found."
+  (let* ((current-file (buffer-file-name))
+         (current-dir (and current-file (file-name-directory current-file)))
+         (parent-dir (and current-dir (file-name-directory (directory-file-name current-dir))))
+         (base-name (downcase pkg-name))
+         (pkg-file-vhd (concat base-name "_pkg.vhd"))
+         (pkg-file-vhdl (concat base-name "_pkg.vhdl"))
+         found-file)
+    
+    ;; Search in existing buffers
+    (catch 'found
+      (dolist (buf (buffer-list))
+        (let ((buf-file (buffer-file-name buf)))
+          (when buf-file
+            (let ((buf-name (file-name-nondirectory buf-file)))
+              (when (or (string= buf-name pkg-file-vhd)
+                       (string= buf-name pkg-file-vhdl))
+                (setq found-file buf-file)
+                (throw 'found t))))))
+      
+      ;; Search in current directory
+      (when current-dir
+        (let ((file-vhd (expand-file-name pkg-file-vhd current-dir))
+              (file-vhdl (expand-file-name pkg-file-vhdl current-dir)))
+          (cond
+           ((file-exists-p file-vhd)
+            (setq found-file file-vhd)
+            (throw 'found t))
+           ((file-exists-p file-vhdl)
+            (setq found-file file-vhdl)
+            (throw 'found t)))))
+      
+      ;; Search in current directory's subdirectories
+      (when current-dir
+        (dolist (subdir (directory-files current-dir t "^[^.]"))
+          (when (file-directory-p subdir)
+            (let ((file-vhd (expand-file-name pkg-file-vhd subdir))
+                  (file-vhdl (expand-file-name pkg-file-vhdl subdir)))
+              (cond
+               ((file-exists-p file-vhd)
+                (setq found-file file-vhd)
+                (throw 'found t))
+               ((file-exists-p file-vhdl)
+                (setq found-file file-vhdl)
+                (throw 'found t)))))))
+      
+      ;; Search in parent directory
+      (when parent-dir
+        (let ((file-vhd (expand-file-name pkg-file-vhd parent-dir))
+              (file-vhdl (expand-file-name pkg-file-vhdl parent-dir)))
+          (cond
+           ((file-exists-p file-vhd)
+            (setq found-file file-vhd)
+            (throw 'found t))
+           ((file-exists-p file-vhdl)
+            (setq found-file file-vhdl)
+            (throw 'found t)))))
+      
+      ;; Search in parent's subdirectories
+      (when parent-dir
+        (dolist (subdir (directory-files parent-dir t "^[^.]"))
+          (when (file-directory-p subdir)
+            (let ((file-vhd (expand-file-name pkg-file-vhd subdir))
+                  (file-vhdl (expand-file-name pkg-file-vhdl subdir)))
+              (cond
+               ((file-exists-p file-vhd)
+                (setq found-file file-vhd)
+                (throw 'found t))
+               ((file-exists-p file-vhdl)
+                (setq found-file file-vhdl)
+                (throw 'found t))))))))
+    
+    found-file))
+
+(defun vhdl-lookup-extract-definitions (file)
+  "Extract constant and function definitions from FILE.
+Returns an alist of (ID . FILE) pairs."
+  (let ((defs '())
+        (const-regexp vhdl-re-decl-constant)
+        (func-regexp (concat vhdl-re-lead-sp0
+                            "\\<function\\>"
+                            re-wspace1
+                            vhdl-re-id))
+        id)
+    (with-temp-buffer
+      (condition-case err
+          (insert-file-contents file)
+        (error
+         (message "Error reading file %s: %s" file (error-message-string err))
+         (setq defs nil)))
+      (when (> (buffer-size) 0)
+        (goto-char (point-min))
+        ;; Extract constants
+        (while (re-search-forward const-regexp nil t)
+          (setq id (match-string-no-properties 2))
+          (when id
+            (push (cons id file) defs)))
+        ;; Extract functions
+        (goto-char (point-min))
+        (while (re-search-forward func-regexp nil t)
+          (setq id (match-string-no-properties 1))
+          (when id
+            (push (cons id file) defs)))))
+    defs))
+
+(defun vhdl-lookup-is-defined-locally (id)
+  "Check if ID is defined in the current buffer.
+Returns t if ID is defined as a constant, function, signal, or variable."
+  (let ((found nil)
+        (const-regexp vhdl-re-decl-constant)
+        (func-regexp (concat vhdl-re-lead-sp0
+                            "\\<function\\>"
+                            re-wspace1
+                            id
+                            "\\>"))
+        (signal-regexp vhdl-re-decl-signal)
+        (var-regexp vhdl-re-decl-variable))
+    (save-excursion
+      (goto-char (point-min))
+      ;; Check for constant definition
+      (while (and (not found) (re-search-forward const-regexp nil t))
+        (when (string= (match-string-no-properties 2) id)
+          (setq found t)))
+      ;; Check for function definition
+      (goto-char (point-min))
+      (when (and (not found) (re-search-forward func-regexp nil t))
+        (setq found t))
+      ;; Check for signal definition
+      (goto-char (point-min))
+      (while (and (not found) (re-search-forward signal-regexp nil t))
+        (when (string= (match-string-no-properties 1) id)
+          (setq found t)))
+      ;; Check for variable definition
+      (goto-char (point-min))
+      (while (and (not found) (re-search-forward var-regexp nil t))
+        (when (string= (match-string-no-properties 1) id)
+          (setq found t))))
+    found))
+
+(defun vhdl-lookup-find-identifiers ()
+  "Find all identifiers used in the current buffer.
+Returns a list of unique identifier names."
+  (let ((id-list '())
+        id)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward vhdl-re-id nil t)
+        (setq id (match-string-no-properties 1))
+        (when (and id (not (member id id-list)))
+          (push id id-list))))
+    id-list))
+
+(defun vhdl-lookup-build-table ()
+  "Build a lookup table of VHDL constants/functions and their defining files.
+Searches for undefined identifiers in the current buffer and looks them up
+in package files specified by 'use work.PKG.all' statements.
+Returns a sorted alist of (ID . FILE) pairs."
+  (interactive)
+  (let* ((packages (vhdl-lookup-extract-use-packages))
+         (all-defs '())
+         (identifiers (vhdl-lookup-find-identifiers))
+         (lookup-table '())
+         pkg-file defs)
+    
+    ;; Collect definitions from all package files
+    (dolist (pkg packages)
+      (setq pkg-file (vhdl-lookup-find-package-file pkg))
+      (when pkg-file
+        (setq defs (vhdl-lookup-extract-definitions pkg-file))
+        (setq all-defs (append defs all-defs))))
+    
+    ;; Build lookup table for undefined identifiers
+    (dolist (id identifiers)
+      (unless (vhdl-lookup-is-defined-locally id)
+        (let ((def (assoc id all-defs)))
+          (when def
+            (push def lookup-table)))))
+    
+    ;; Remove duplicates and sort
+    (setq lookup-table (delete-dups lookup-table))
+    (setq lookup-table (sort lookup-table
+                            (lambda (a b)
+                              (string< (car a) (car b)))))
+    
+    lookup-table))
+
+(defun vhdl-lookup-display-table ()
+  "Display the VHDL lookup table in a buffer.
+Shows constants and functions with their defining files."
+  (interactive)
+  (let ((table (vhdl-lookup-build-table))
+        (buf-name "*VHDL Lookup Table*")
+        buf)
+    (if (null table)
+        (message "No undefined constants or functions found in package files")
+      (setq buf (get-buffer-create buf-name))
+      (with-current-buffer buf
+        (erase-buffer)
+        (insert "VHDL Lookup Table\n")
+        (insert "=================\n\n")
+        (insert (format "%-40s %s\n" "Identifier" "Defined In"))
+        (insert (format "%-40s %s\n" "----------" "----------"))
+        (insert "\n")
+        (dolist (entry table)
+          (insert (format "%-40s %s\n" 
+                         (car entry) 
+                         (file-name-nondirectory (cdr entry)))))
+        (goto-char (point-min)))
+      (display-buffer buf)
+      (message "Lookup table created with %d entries" (length table)))))
+
 
