@@ -1839,13 +1839,18 @@ Searches for 'pkg-name_pkg.vhd' or 'pkg-name_pkg.vhdl' in:
 3. Current directory's subdirectories
 4. Parent directory
 5. Parent's subdirectories
+If PKG-NAME already ends with '_pkg', does not add '_pkg' again.
 Returns the full file path or nil if not found."
   (let* ((current-file (buffer-file-name))
          (current-dir (and current-file (file-name-directory current-file)))
          (parent-dir (and current-dir (file-name-directory (directory-file-name current-dir))))
          (base-name (downcase pkg-name))
-         (pkg-file-vhd (concat base-name "_pkg.vhd"))
-         (pkg-file-vhdl (concat base-name "_pkg.vhdl"))
+         ;; If package name already ends with _pkg, don't add it again
+         (base-name-with-pkg (if (string-match "_pkg$" base-name)
+                                 base-name
+                               (concat base-name "_pkg")))
+         (pkg-file-vhd (concat base-name-with-pkg ".vhd"))
+         (pkg-file-vhdl (concat base-name-with-pkg ".vhdl"))
          found-file)
 
     ;; Search in existing buffers
@@ -1915,14 +1920,24 @@ Returns the full file path or nil if not found."
 
 (defun vhdl-lookup-extract-definitions (file)
   "Extract constant and function definitions from FILE.
-Returns an alist of (ID . FILE) pairs."
+Returns an alist of (ID TYPE VALUE . FILE) structures."
   (let ((defs '())
         (const-regexp vhdl-re-decl-constant)
         (func-regexp (concat vhdl-re-lead-sp0
                             "\\<function\\>"
                             re-wspace1
-                            vhdl-re-id))
-        id)
+                            vhdl-re-id
+                            re-wspace0
+                            "("
+                            "[^)]*"
+                            ")"
+                            re-wspace0
+                            "\\<return\\>"
+                            re-wspace1
+                            re-open
+                            "[^;]+"
+                            re-close))
+        id type-str value-str)
     (with-temp-buffer
       (condition-case err
           (insert-file-contents file)
@@ -1934,14 +1949,28 @@ Returns an alist of (ID . FILE) pairs."
         ;; Extract constants
         (while (re-search-forward const-regexp nil t)
           (setq id (match-string-no-properties 2))
+          (setq type-str (match-string-no-properties 3))
+          (setq value-str (match-string-no-properties 4))
           (when id
-            (push (cons id file) defs)))
+            ;; Trim whitespace from type and value
+            (when type-str
+              (setq type-str (replace-regexp-in-string "^[[:space:]]+" "" type-str))
+              (setq type-str (replace-regexp-in-string "[[:space:]]+$" "" type-str)))
+            (when value-str
+              (setq value-str (replace-regexp-in-string "^[[:space:]]+" "" value-str))
+              (setq value-str (replace-regexp-in-string "[[:space:]]+$" "" value-str)))
+            (push (list id type-str value-str file) defs)))
         ;; Extract functions
         (goto-char (point-min))
         (while (re-search-forward func-regexp nil t)
           (setq id (match-string-no-properties 1))
+          (setq type-str (match-string-no-properties 2))
           (when id
-            (push (cons id file) defs)))))
+            ;; Trim whitespace from type
+            (when type-str
+              (setq type-str (replace-regexp-in-string "^[[:space:]]+" "" type-str))
+              (setq type-str (replace-regexp-in-string "[[:space:]]+$" "" type-str)))
+            (push (list id type-str "(function)" file) defs)))))
     defs))
 
 (defun vhdl-lookup-is-defined-locally (id)
@@ -1995,7 +2024,7 @@ Returns a list of unique identifier names."
   "Build a lookup table of VHDL constants/functions and their defining files.
 Searches for undefined identifiers in the current buffer and looks them up
 in package files specified by 'use work.PKG.all' statements.
-Returns a sorted alist of (ID . FILE) pairs."
+Returns a sorted list of (ID TYPE VALUE FILE) structures."
   (interactive)
   (let* ((packages (vhdl-lookup-extract-use-packages))
          (all-defs '())
@@ -2009,25 +2038,25 @@ Returns a sorted alist of (ID . FILE) pairs."
       (when pkg-file
         (setq defs (vhdl-lookup-extract-definitions pkg-file))
         (setq all-defs (append defs all-defs))))
-    
+
     ;; Build lookup table for undefined identifiers
     (dolist (id identifiers)
       (unless (vhdl-lookup-is-defined-locally id)
         (let ((def (assoc id all-defs)))
           (when def
             (push def lookup-table)))))
-    
+
     ;; Remove duplicates and sort
     (setq lookup-table (delete-dups lookup-table))
     (setq lookup-table (sort lookup-table
                             (lambda (a b)
                               (string< (car a) (car b)))))
-    
+
     lookup-table))
 
 (defun vhdl-lookup-display-table ()
   "Display the VHDL lookup table in a buffer.
-Shows constants and functions with their defining files."
+Shows constants and functions with their type, value, and defining files."
   (interactive)
   (let ((table (vhdl-lookup-build-table))
         (buf-name "*VHDL Lookup Table*")
@@ -2039,13 +2068,19 @@ Shows constants and functions with their defining files."
         (erase-buffer)
         (insert "VHDL Lookup Table\n")
         (insert "=================\n\n")
-        (insert (format "%-40s %s\n" "Identifier" "Defined In"))
-        (insert (format "%-40s %s\n" "----------" "----------"))
+        (insert (format "%-30s %-25s %-20s %s\n" "Identifier" "Type" "Value" "Defined In"))
+        (insert (format "%-30s %-25s %-20s %s\n" "----------" "----" "-----" "----------"))
         (insert "\n")
         (dolist (entry table)
-          (insert (format "%-40s %s\n" 
-                         (car entry) 
-                         (file-name-nondirectory (cdr entry)))))
+          (let ((id (nth 0 entry))
+                (type-str (or (nth 1 entry) ""))
+                (value-str (or (nth 2 entry) ""))
+                (file (nth 3 entry)))
+            (insert (format "%-30s %-25s %-20s %s\n"
+                           id
+                           type-str
+                           value-str
+                           (file-name-nondirectory file)))))
         (goto-char (point-min)))
       (display-buffer buf)
       (message "Lookup table created with %d entries" (length table)))))
