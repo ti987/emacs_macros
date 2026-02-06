@@ -1,0 +1,82 @@
+================================================================================
+                        VHDL LOOKUP TABLE OUTPUT
+================================================================================
+
+This shows what the enhanced lookup table looks like when running:
+M-x vhdl-lookup-display-table
+
+on test_design.vhd or test_pkg_suffix.vhd files.
+
+================================================================================
+
+BUFFER: *VHDL Lookup Table*
+
+--------------------------------------------------------------------------------
+VHDL Lookup Table
+=================
+
+Identifier                     Type                      Value                Defined In
+----------                     ----                      -----                ----------
+
+ADDR_WIDTH                     integer                   16                   constants_pkg.vhd
+DATA_WIDTH                     integer                   32                   constants_pkg.vhd
+ENABLE_DEBUG                   boolean                   true                 utils_pkg.vhd
+MAX_COUNT                      integer                   1024                 constants_pkg.vhd
+RESET_VALUE                    std_logic_vector(7 down   x"00"                constants_pkg.vhd
+TIMEOUT_CYCLES                 integer                   1000                 utils_pkg.vhd
+log2                           natural                   (function)           constants_pkg.vhd
+parity                         std_logic                 (function)           utils_pkg.vhd
+to_gray                        std_logic_vector          (function)           constants_pkg.vhd
+
+--------------------------------------------------------------------------------
+
+MINIBUFFER MESSAGE:
+Lookup table created with 9 entries
+
+================================================================================
+
+KEY IMPROVEMENTS:
+
+1. PACKAGE NAME HANDLING (_pkg suffix)
+   =====================================
+   
+   BEFORE: If use statement was "use work.constants_pkg.all;"
+           Function searched for: constants_pkg_pkg.vhd (WRONG!)
+   
+   AFTER:  If use statement is "use work.constants_pkg.all;"
+           Function searches for: constants_pkg.vhd (CORRECT!)
+           
+           If use statement is "use work.constants.all;"
+           Function searches for: constants_pkg.vhd (adds _pkg as before)
+
+2. NEW COLUMNS ADDED
+   ==================
+   
+   OLD FORMAT (2 columns):
+   Identifier                               Defined In
+   DATA_WIDTH                               constants_pkg.vhd
+   
+   NEW FORMAT (4 columns):
+   Identifier                     Type                      Value                Defined In
+   DATA_WIDTH                     integer                   32                   constants_pkg.vhd
+   
+   BENEFITS:
+   - See the type of each constant/function at a glance
+   - See the value of constants immediately
+   - Functions clearly marked with "(function)" indicator
+   - More informative for developers debugging VHDL code
+
+================================================================================
+
+TEST CASES:
+
+1. test_design.vhd
+   - Uses: use work.constants_pkg.all; (with _pkg)
+   - Uses: use work.utils_pkg.all; (with _pkg)
+   - Both work correctly with the fix
+
+2. test_pkg_suffix.vhd
+   - Specifically tests _pkg suffix handling
+   - Uses only constants_pkg to verify the fix
+
+================================================================================
