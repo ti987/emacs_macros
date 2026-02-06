@@ -1847,7 +1847,7 @@ Returns the full file path or nil if not found."
          (pkg-file-vhd (concat base-name "_pkg.vhd"))
          (pkg-file-vhdl (concat base-name "_pkg.vhdl"))
          found-file)
-    
+
     ;; Search in existing buffers
     (catch 'found
       (dolist (buf (buffer-list))
@@ -1910,7 +1910,7 @@ Returns the full file path or nil if not found."
                ((file-exists-p file-vhdl)
                 (setq found-file file-vhdl)
                 (throw 'found t))))))))
-    
+
     found-file))
 
 (defun vhdl-lookup-extract-definitions (file)
@@ -2002,7 +2002,7 @@ Returns a sorted alist of (ID . FILE) pairs."
          (identifiers (vhdl-lookup-find-identifiers))
          (lookup-table '())
          pkg-file defs)
-    
+
     ;; Collect definitions from all package files
     (dolist (pkg packages)
       (setq pkg-file (vhdl-lookup-find-package-file pkg))
