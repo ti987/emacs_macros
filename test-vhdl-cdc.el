@@ -133,7 +133,7 @@
 
   ;; --- Full output test ---
   (message "\n-- Full output generation --")
-  (let ((output (vhdl-cdc--format-output "cdc_test.vhd" clocks domains)))
+  (let ((output (vhdl-cdc--format-output "cdc_test.vhd" clocks domains decls)))
     (check "Output contains 'Domain Clocks' section"
            (string-match-p "Domain Clocks" output))
     (check "Output contains sys_clk clock"
@@ -142,7 +142,16 @@
            (string-match-p "\\*\\*\\*.*crossing_data" output))
     (check "Output shows ignored signal without ***"
            (and (string-match-p "gray_count" output)
-                (string-match-p "ignored:" output))))
+                (string-match-p "ignored:" output)))
+    (check "Output contains 'Unknown Clock Domain' section"
+           (string-match-p "Unknown Clock Domain" output))
+    ;; rst_n is declared as a port but never assigned a clock domain
+    (check "Unknown section contains rst_n"
+           (string-match-p "rst_n" output))
+    ;; Unknown section must appear before CDC section
+    (check "Unknown section precedes CDC section"
+           (< (string-match "Unknown Clock Domain" output)
+              (string-match "CDC Signals" output))))
 
   ;; --- Regression: vhdl-cdc-clk-domain nil must not crash ---
   (message "\n-- Regression: nil vhdl-cdc-clk-domain returns hash-table --")

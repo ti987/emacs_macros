@@ -339,11 +339,12 @@ Duplicate (SIG . CLK) pairs are deduplicated."
 ;;; Output formatting
 ;;; ---------------------------------------------------------------------------
 
-(defun vhdl-cdc--format-output (source-name clocks domains)
+(defun vhdl-cdc--format-output (source-name clocks domains decls)
   "Return a formatted string for the CDC analysis report.
 SOURCE-NAME is the file/buffer name.
 CLOCKS is a list of plists (:name :line :method).
-DOMAINS maps signal-name -> ((CLK METHOD LINE) ...)."
+DOMAINS maps signal-name -> ((CLK METHOD LINE) ...).
+DECLS is the full list of signal/port declaration plists."
   (with-temp-buffer
     (insert (format "VHDL Clock Domain Analysis\n"))
     (insert (format "==========================\n"))
@@ -381,7 +382,24 @@ DOMAINS maps signal-name -> ((CLK METHOD LINE) ...)."
             (insert "  (no signals found)\n")))
         (insert "\n"))
 
-      ;; Section 3 -- CDC violations
+      ;; Section 3 -- Unknown clock domain
+      ;; Signals/ports declared but with no clock domain determined,
+      ;; and not themselves a domain clock.
+      (insert "Unknown Clock Domain\n")
+      (insert "--------------------\n")
+      (let ((unknown-sigs '()))
+        (dolist (d decls)
+          (let ((name (plist-get d :name)))
+            (when (and (not (member name clock-names))
+                       (not (gethash name domains)))
+              (push (list name (plist-get d :line)) unknown-sigs))))
+        (if unknown-sigs
+            (dolist (s (sort unknown-sigs (lambda (a b) (string< (car a) (car b)))))
+              (insert (format "  %-30s  line %4d\n" (nth 0 s) (nth 1 s))))
+          (insert "  (none)\n")))
+      (insert "\n")
+
+      ;; Section 4 -- CDC violations
       (insert "CDC Signals (Multiple Clock Domains)\n")
       (insert "-------------------------------------\n")
       (let ((cdc-sigs '()))
@@ -448,7 +466,7 @@ Configuration:
          ;; Merge all domain tables
          (domains     (vhdl-cdc--merge-domains dom-b1 dom-b2 dom-b3))
          ;; Format and display
-         (output      (vhdl-cdc--format-output source-name clocks domains))
+         (output      (vhdl-cdc--format-output source-name clocks domains decls))
          (out-buf     (get-buffer-create "*VHDL CDC Analysis*")))
     (with-current-buffer out-buf
       (setq buffer-read-only nil)
