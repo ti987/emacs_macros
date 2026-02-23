@@ -312,8 +312,8 @@ CLOCK-NAMES is the list of known clock name strings."
                                 (puthash data-sig
                                          (cons (list clk-sig "B.3" portmap-line)
                                                current)
-                                         domains))))))))))))))
-    domains)))
+                                         domains)))))))))))))))
+    domains))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Merge domain hash tables

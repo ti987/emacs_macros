@@ -144,6 +144,20 @@
            (and (string-match-p "gray_count" output)
                 (string-match-p "ignored:" output))))
 
+  ;; --- Regression: vhdl-cdc-clk-domain nil must not crash ---
+  (message "\n-- Regression: nil vhdl-cdc-clk-domain returns hash-table --")
+  (let ((vhdl-cdc-clk-domain nil))
+    (check "domains-from-instances returns hash-table when vhdl-cdc-clk-domain is nil"
+           (hash-table-p
+            (with-current-buffer buf
+              (vhdl-cdc--domains-from-instances buf clock-names))))
+    ;; The full analyze pipeline must also work with nil vhdl-cdc-clk-domain
+    (check "merge-domains does not error with nil vhdl-cdc-clk-domain"
+           (let* ((d3  (with-current-buffer buf
+                         (vhdl-cdc--domains-from-instances buf clock-names)))
+                  (merged (vhdl-cdc--merge-domains dom-b1 dom-b2 d3)))
+             (hash-table-p merged))))
+
   (message "\n=== Results: %d passed, %d failed ===\n"
            test-pass-count test-fail-count)
   (when (> test-fail-count 0)
