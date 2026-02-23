@@ -6,15 +6,22 @@
 ;;
 ;; Clock domain detection rules:
 ;;   A.1 - signal/port name ends with "clk" (case-insensitive)
-;;   A.2 - signal/port inline comment contains "dom_clk:"
+;;   A.2 - signal/port inline comment (or preceding block comment) contains
+;;         "dom_clk:" or "domain_clock:"
 ;;   A.3 - signal/port name is listed in `vhdl-cdc-clock'
 ;;
 ;; Signal clock-domain assignment rules:
 ;;   B.1 - signal assigned in a process whose sensitivity list contains a
 ;;         domain clock
-;;   B.2 - signal declaration has "clk_dom:CLOCKNAME" in its inline comment
+;;   B.2 - signal declaration (inline or preceding block comment) has
+;;         "clk_dom:CLOCKNAME" or "clock_domain:CLOCKNAME"
 ;;   B.3 - signal connected to a pre-specified entity/port pair defined in
 ;;         `vhdl-cdc-clk-domain'
+;;
+;; Block comment annotation (rules A.2, B.2):
+;;   A block is a pure-comment line followed by consecutive signal/port
+;;   declaration lines ended by a blank line.  A keyword in the leading
+;;   comment line applies to every signal/port in the block.
 ;;
 ;; Usage:
 ;;   M-x vhdl-cdc-analyze   (run in a VHDL buffer)
@@ -65,11 +72,13 @@ Example:
 
 (defun vhdl-cdc--clock-method (name comment)
   "Return the clock-detection method string for NAME/COMMENT, or nil.
-Returns \"A.1\", \"A.2\", or \"A.3\" for the first matching rule."
+Returns \"A.1\", \"A.2\", or \"A.3\" for the first matching rule.
+Rule A.2 matches comments containing \"dom_clk:\" or \"domain_clock:\"."
   (cond
-   ((string-match-p "clk\\'" (downcase name))          "A.1")
-   ((and comment (string-match-p "dom_clk:" comment))  "A.2")
-   ((member name vhdl-cdc-clock)                       "A.3")
+   ((string-match-p "clk\\'" (downcase name))                            "A.1")
+   ((and comment
+         (string-match-p "\\(?:dom_clk\\|domain_clock\\):" comment))    "A.2")
+   ((member name vhdl-cdc-clock)                                         "A.3")
    (t nil)))
 
 (defun vhdl-cdc--ignored-p (name)
@@ -93,6 +102,16 @@ Returns \"A.1\", \"A.2\", or \"A.3\" for the first matching rule."
       (setq pos (match-end 0)))
     (nreverse ids)))
 
+(defun vhdl-cdc--extract-clk-dom (comment)
+  "Return the clock name from a \"clk_dom:\" or \"clock_domain:\" annotation.
+COMMENT is a string (inline or block comment text).  Returns nil when
+no annotation is present."
+  (when (and comment
+             (string-match
+              "\\(?:clk_dom\\|clock_domain\\):\\([a-zA-Z][a-zA-Z0-9_]*\\)"
+              comment))
+    (match-string 1 comment)))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Declaration scanner (signals and ports)
 ;;; ---------------------------------------------------------------------------
@@ -100,11 +119,17 @@ Returns \"A.1\", \"A.2\", or \"A.3\" for the first matching rule."
 (defun vhdl-cdc--scan-declarations (buf)
   "Scan BUF for signal and port declarations.
 Returns a list of plists, each with:
-  :name    - identifier string
-  :kind    - \\='signal or \\='port
-  :line    - line number (integer)
-  :comment - inline comment string or nil"
-  (let ((decls '()))
+  :name          - identifier string
+  :kind          - \\='signal or \\='port
+  :line          - line number (integer)
+  :comment       - inline comment string or nil
+  :block-comment - leading block-comment text applying to this decl, or nil
+
+Block comment: a pure-comment line (or the last of consecutive comment lines)
+immediately preceding a run of declarations, reset by a blank line."
+  (let ((decls         '())
+        (block-comment nil)   ; comment from the line preceding the current block
+        (in-decl-block nil))  ; t while inside a consecutive run of declarations
     (with-current-buffer buf
       (save-excursion
         (goto-char (point-min))
@@ -114,28 +139,47 @@ Returns a list of plists, each with:
                  (linenum (line-number-at-pos))
                  (comment (vhdl-cdc--inline-comment text))
                  name kind)
-            ;; signal declaration:  signal NAME :
-            (when (string-match
-                   "^[ \t]*signal[ \t]+\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:"
-                   text)
-              (setq name (match-string 1 text)
-                    kind 'signal))
-            ;; port declaration:  NAME : in/out/inout/buffer TYPE
-            ;; (exclude port-map connections that contain "=>")
-            (when (and (not name)
-                       (not (string-match "=>" text))
-                       (string-match
-                        "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:[ \t]*\
-\\(?:in\\|out\\|inout\\|buffer\\)[ \t]"
-                        (concat (downcase text) " ")))
-              ;; re-run without downcase to get correct casing
+            (cond
+             ;; Blank line – reset block context
+             ((string-match-p "^[ \t]*$" text)
+              (setq block-comment nil
+                    in-decl-block nil))
+             ;; Pure comment line (no declaration on it)
+             ((string-match-p "^[ \t]*--" text)
+              ;; Only update block-comment while not yet inside a decl run
+              (unless in-decl-block
+                (setq block-comment comment)))
+             (t
+              ;; Try to match a declaration
+              ;; signal declaration:  signal NAME :
               (when (string-match
-                     "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:" text)
+                     "^[ \t]*signal[ \t]+\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:"
+                     text)
                 (setq name (match-string 1 text)
-                      kind 'port)))
-            (when name
-              (push (list :name name :kind kind :line linenum :comment comment)
-                    decls)))
+                      kind 'signal))
+              ;; port declaration:  NAME : in/out/inout/buffer TYPE
+              ;; (exclude port-map connections that contain "=>")
+              (when (and (not name)
+                         (not (string-match "=>" text))
+                         (string-match
+                          "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:[ \t]*\
+\\(?:in\\|out\\|inout\\|buffer\\)[ \t]"
+                          (concat (downcase text) " ")))
+                ;; re-run without downcase to get correct casing
+                (when (string-match
+                       "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:" text)
+                  (setq name (match-string 1 text)
+                        kind 'port)))
+              (if name
+                  (progn
+                    (setq in-decl-block t)
+                    (push (list :name name :kind kind :line linenum
+                                :comment comment
+                                :block-comment block-comment)
+                          decls))
+                ;; Non-blank, non-comment, non-declaration line
+                (setq block-comment nil
+                      in-decl-block nil)))))
           (forward-line 1))))
     (nreverse decls)))
 
@@ -145,12 +189,16 @@ Returns a list of plists, each with:
 
 (defun vhdl-cdc--find-clocks (decls)
   "Given DECLS (from `vhdl-cdc--scan-declarations'), return clock entries.
-Each entry is a plist: :name :line :method."
+Each entry is a plist: :name :line :method.
+Rule A.2 checks both the inline comment and the preceding block comment."
   (let ((clocks '()))
     (dolist (d decls)
       (let* ((name    (plist-get d :name))
              (comment (plist-get d :comment))
-             (method  (vhdl-cdc--clock-method name comment)))
+             (blk     (plist-get d :block-comment))
+             ;; Inline comment has priority; fall back to block comment
+             (method  (or (vhdl-cdc--clock-method name comment)
+                          (vhdl-cdc--clock-method name blk))))
         (when method
           (push (list :name name :line (plist-get d :line) :method method)
                 clocks))))
@@ -225,27 +273,30 @@ Returns an alist: ((SIG-NAME . ((CLK-NAME METHOD LINE) ...)) ...)"
     domains))
 
 ;;; ---------------------------------------------------------------------------
-;;; Phase B.2  --  declaration comment  clk_dom:CLOCK
+;;; Phase B.2  --  declaration comment  clk_dom:/clock_domain:CLOCK
 ;;; ---------------------------------------------------------------------------
 
 (defun vhdl-cdc--domains-from-comments (decls clock-names)
   "Rule B.2: return domain alist from declaration comments.
+Checks both the inline comment and the preceding block comment for
+\"clk_dom:CLOCK\" or \"clock_domain:CLOCK\" annotations.
 DECLS is from `vhdl-cdc--scan-declarations'.
 CLOCK-NAMES is the list of known clock name strings."
   (let ((domains (make-hash-table :test 'equal)))
     (dolist (d decls)
-      (let ((comment (plist-get d :comment)))
-        (when (and comment
-                   (string-match "clk_dom:\\([a-zA-Z][a-zA-Z0-9_]*\\)" comment))
-          (let* ((clk  (match-string 1 comment))
-                 (name (plist-get d :name))
-                 (line (plist-get d :line)))
-            (when (member clk clock-names)
-              (let ((current (gethash name domains)))
-                (unless (cl-find clk current :key #'car :test #'string-equal)
-                  (puthash name
-                           (cons (list clk "B.2" line) current)
-                           domains))))))))
+      (let* ((comment (plist-get d :comment))
+             (blk     (plist-get d :block-comment))
+             ;; Inline comment has priority; fall back to block comment
+             (clk     (or (vhdl-cdc--extract-clk-dom comment)
+                          (vhdl-cdc--extract-clk-dom blk))))
+        (when (and clk (member clk clock-names))
+          (let* ((name    (plist-get d :name))
+                 (line    (plist-get d :line))
+                 (current (gethash name domains)))
+            (unless (cl-find clk current :key #'car :test #'string-equal)
+              (puthash name
+                       (cons (list clk "B.2" line) current)
+                       domains))))))
     domains))
 
 ;;; ---------------------------------------------------------------------------
@@ -399,30 +450,52 @@ DECLS is the full list of signal/port declaration plists."
           (insert "  (none)\n")))
       (insert "\n")
 
-      ;; Section 4 -- CDC violations
+      ;; Section 4 -- Ignored CDC signals (multi-domain but in vhdl-cdc-ignore)
+      (insert "Ignored CDC Signals\n")
+      (insert "-------------------\n")
+      (let ((ignored-sigs '()))
+        (maphash
+         (lambda (sig entries)
+           (when (and (> (length entries) 1)
+                      (vhdl-cdc--ignored-p sig))
+             (push (cons sig entries) ignored-sigs)))
+         domains)
+        (if ignored-sigs
+            (dolist (item (sort ignored-sigs
+                                (lambda (a b) (string< (car a) (car b)))))
+              (let* ((sig-name (car item))
+                     (entries  (cdr item)))
+                (insert (format "  %s\n" sig-name))
+                (let ((rationale (vhdl-cdc--ignore-rationale sig-name)))
+                  (when rationale
+                    (insert (format "    rationale: %s\n" rationale))))
+                (dolist (e (sort (copy-sequence entries)
+                                 (lambda (a b) (string< (car a) (car b)))))
+                  (insert (format "    domain %-20s  line %4d  [%s]\n"
+                                  (nth 0 e) (nth 2 e) (nth 1 e))))))
+          (insert "  (none)\n")))
+      (insert "\n")
+
+      ;; Section 5 -- CDC violations (non-ignored multi-domain signals)
       (insert "CDC Signals (Multiple Clock Domains)\n")
       (insert "-------------------------------------\n")
       (let ((cdc-sigs '()))
         (maphash
          (lambda (sig entries)
-           (when (> (length entries) 1)
+           (when (and (> (length entries) 1)
+                      (not (vhdl-cdc--ignored-p sig)))
              (push (cons sig entries) cdc-sigs)))
          domains)
         (if cdc-sigs
             (dolist (item (sort cdc-sigs
                                 (lambda (a b) (string< (car a) (car b)))))
               (let* ((sig-name (car item))
-                     (entries  (cdr item))
-                     (ignored  (vhdl-cdc--ignored-p sig-name))
-                     (prefix   (if ignored "    " "*** ")))
-                (insert (format "%s%s\n" prefix sig-name))
+                     (entries  (cdr item)))
+                (insert (format "*** %s\n" sig-name))
                 (dolist (e (sort (copy-sequence entries)
                                  (lambda (a b) (string< (car a) (car b)))))
                   (insert (format "       domain %-20s  line %4d  [%s]\n"
-                                  (nth 0 e) (nth 2 e) (nth 1 e))))
-                (when ignored
-                  (insert (format "       (ignored: %s)\n"
-                                  (or (vhdl-cdc--ignore-rationale sig-name) ""))))))
+                                  (nth 0 e) (nth 2 e) (nth 1 e))))))
           (insert "  (none found)\n"))))
     (buffer-string)))
 
@@ -436,17 +509,23 @@ DECLS is the full list of signal/port declaration plists."
 
 Identifies domain clocks using:
   A.1 - signal/port name ends with \\\"clk\\\"
-  A.2 - inline comment contains \\\"dom_clk:\\\"
+  A.2 - inline comment (or preceding block comment) contains
+        \\\"dom_clk:\\\" or \\\"domain_clock:\\\"
   A.3 - name is in variable `vhdl-cdc-clock'
 
 Assigns signals to clock domains using:
   B.1 - signal assigned in a process whose sensitivity list has a domain clock
-  B.2 - declaration comment has \\\"clk_dom:CLOCKNAME\\\"
+  B.2 - declaration comment (inline or preceding block comment) has
+        \\\"clk_dom:CLOCKNAME\\\" or \\\"clock_domain:CLOCKNAME\\\"
   B.3 - signal connected to a port specified in `vhdl-cdc-clk-domain'
 
+Block comment annotation: a keyword in the leading comment line of a
+declaration block (comment line(s) then declarations then blank line)
+applies the keyword to every signal/port in that block.
+
 Output is displayed in the *VHDL CDC Analysis* buffer.
-Signals belonging to multiple clock domains are listed with \\\"***\\\",
-unless they appear in `vhdl-cdc-ignore'.
+Signals in `vhdl-cdc-ignore' that cross domains are listed in a
+separate \\\"Ignored CDC Signals\\\" section before the CDC violations.
 
 Configuration:
   `vhdl-cdc-clock'      - extra clock signal names (rule A.3)

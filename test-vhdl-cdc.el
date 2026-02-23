@@ -64,8 +64,13 @@
                                    (string-equal (plist-get c :method) "A.1")))
                   clocks))
 
-  (check "A.2: ref_clock detected as clock"
+  (check "A.2: ref_clock detected via dom_clk: keyword"
          (cl-some (lambda (c) (and (string-equal (plist-get c :name) "ref_clock")
+                                   (string-equal (plist-get c :method) "A.2")))
+                  clocks))
+
+  (check "A.2: aux_clock detected via domain_clock: alias"
+         (cl-some (lambda (c) (and (string-equal (plist-get c :name) "aux_clock")
                                    (string-equal (plist-get c :method) "A.2")))
                   clocks))
 
@@ -99,8 +104,26 @@
   ;; --- B.2 comment-based domain assignment ---
   (message "\n-- B.2 comment-based domain assignment --")
 
-  (check "B.2: annotated_sig in sys_clk domain via clk_dom: comment"
+  (check "B.2: annotated_sig via inline clk_dom: keyword"
          (let ((entries (gethash "annotated_sig" dom-b2)))
+           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
+                                     (string-equal (nth 1 e) "B.2")))
+                    entries)))
+
+  (check "B.2: annotated_sig2 via inline clock_domain: alias"
+         (let ((entries (gethash "annotated_sig2" dom-b2)))
+           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
+                                     (string-equal (nth 1 e) "B.2")))
+                    entries)))
+
+  (check "B.2: block_sig1 via block comment clock_domain: annotation"
+         (let ((entries (gethash "block_sig1" dom-b2)))
+           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
+                                     (string-equal (nth 1 e) "B.2")))
+                    entries)))
+
+  (check "B.2: block_sig2 via same block comment annotation"
+         (let ((entries (gethash "block_sig2" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
                                      (string-equal (nth 1 e) "B.2")))
                     entries)))
@@ -138,20 +161,26 @@
            (string-match-p "Domain Clocks" output))
     (check "Output contains sys_clk clock"
            (string-match-p "sys_clk" output))
+    (check "Output contains aux_clock clock (domain_clock: alias)"
+           (string-match-p "aux_clock" output))
     (check "Output contains *** for crossing_data"
            (string-match-p "\\*\\*\\*.*crossing_data" output))
-    (check "Output shows ignored signal without ***"
-           (and (string-match-p "gray_count" output)
-                (string-match-p "ignored:" output)))
+    (check "Output contains 'Ignored CDC Signals' section"
+           (string-match-p "Ignored CDC Signals" output))
+    (check "Ignored section contains gray_count"
+           (string-match-p "gray_count" output))
+    (check "Ignored section precedes CDC section"
+           (< (string-match "Ignored CDC Signals" output)
+              (string-match "CDC Signals (Multiple" output)))
+    (check "gray_count NOT preceded by *** in output"
+           (not (string-match-p "\\*\\*\\*.*gray_count" output)))
     (check "Output contains 'Unknown Clock Domain' section"
            (string-match-p "Unknown Clock Domain" output))
-    ;; rst_n is declared as a port but never assigned a clock domain
     (check "Unknown section contains rst_n"
            (string-match-p "rst_n" output))
-    ;; Unknown section must appear before CDC section
-    (check "Unknown section precedes CDC section"
+    (check "Unknown section precedes Ignored section"
            (< (string-match "Unknown Clock Domain" output)
-              (string-match "CDC Signals" output))))
+              (string-match "Ignored CDC Signals" output))))
 
   ;; --- Regression: vhdl-cdc-clk-domain nil must not crash ---
   (message "\n-- Regression: nil vhdl-cdc-clk-domain returns hash-table --")
@@ -160,7 +189,6 @@
            (hash-table-p
             (with-current-buffer buf
               (vhdl-cdc--domains-from-instances buf clock-names))))
-    ;; The full analyze pipeline must also work with nil vhdl-cdc-clk-domain
     (check "merge-domains does not error with nil vhdl-cdc-clk-domain"
            (let* ((d3  (with-current-buffer buf
                          (vhdl-cdc--domains-from-instances buf clock-names)))

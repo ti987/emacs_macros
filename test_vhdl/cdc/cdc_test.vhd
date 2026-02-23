@@ -3,9 +3,11 @@
 --
 -- A.1  sys_clk, fast_clk      (name ends with "clk")
 -- A.2  ref_clock              (comment contains "dom_clk:")
+-- A.2  aux_clock              (comment contains new alias "domain_clock:")
 -- A.3  extra_clk              (in vhdl-cdc-clock user variable)
 -- B.1  process sensitivity list
--- B.2  declaration inline comment "clk_dom:CLK"
+-- B.2  declaration inline comment "clk_dom:CLK" or "clock_domain:CLK"
+-- B.2  block comment annotation applies to all signals in the block
 -- B.3  instance port connection rule
 
 library ieee;
@@ -17,6 +19,7 @@ entity cdc_test is
     sys_clk   : in  std_logic;              -- A.1: name ends with "clk"
     fast_clk  : in  std_logic;              -- A.1: name ends with "clk"
     ref_clock : in  std_logic;              -- A.2: dom_clk: marks this as a domain clock
+    aux_clock : in  std_logic;              -- A.2: domain_clock: new alias for dom_clk:
     rst_n     : in  std_logic;
     data_in   : in  std_logic_vector(7 downto 0);
     data_out  : out std_logic_vector(7 downto 0);
@@ -40,9 +43,18 @@ architecture rtl of cdc_test is
   signal fast_data    : std_logic_vector(7 downto 0);
 
   -- -----------------------------------------------------------------------
-  -- Signals with explicit domain annotation (B.2)
+  -- Signals with explicit inline domain annotation (B.2)
   -- -----------------------------------------------------------------------
-  signal annotated_sig : std_logic;        -- clk_dom:sys_clk
+  signal annotated_sig  : std_logic;       -- clk_dom:sys_clk
+  signal annotated_sig2 : std_logic;       -- clock_domain:sys_clk  (new alias)
+
+  -- -----------------------------------------------------------------------
+  -- Block annotation: clock_domain:sys_clk in block comment applies to all
+  -- signals below until the blank line (B.2 block annotation).
+  -- -----------------------------------------------------------------------
+  -- clock_domain:sys_clk
+  signal block_sig1 : std_logic;
+  signal block_sig2 : std_logic_vector(3 downto 0);
 
   -- -----------------------------------------------------------------------
   -- CDC crossing signal (appears in both sys_clk and fast_clk processes)
