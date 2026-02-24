@@ -66,12 +66,12 @@
                                    (string-equal (plist-get c :method) "A.1")))
                   clocks))
 
-  (check "A.2: ref_clock detected via dom_clk: keyword"
+  (check "A.2: ref_clock detected via dom_clk: legacy keyword"
          (cl-some (lambda (c) (and (string-equal (plist-get c :name) "ref_clock")
                                    (string-equal (plist-get c :method) "A.2")))
                   clocks))
 
-  (check "A.2: aux_clock detected via domain_clock: alias"
+  (check "A.2: aux_clock detected via cdc_clock preferred keyword"
          (cl-some (lambda (c) (and (string-equal (plist-get c :name) "aux_clock")
                                    (string-equal (plist-get c :method) "A.2")))
                   clocks))
@@ -143,7 +143,7 @@
   ;; --- B.2 comment-based domain assignment ---
   (message "\n-- B.2 comment-based domain assignment --")
 
-  (check "B.2: annotated_sig via inline clk_dom: keyword"
+  (check "B.2: annotated_sig via inline clk_dom: legacy keyword"
          (let ((entries (gethash "annotated_sig" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
                                      (string-equal (nth 1 e) "B.2")
@@ -156,7 +156,14 @@
                                      (string-equal (nth 3 e) "assigned")))
                     entries)))
 
-  (check "B.2: block_sig1 via block comment clock_domain: annotation"
+  (check "B.2: annotated_sig3 via inline cdc_domain: preferred keyword"
+         (let ((entries (gethash "annotated_sig3" dom-b2)))
+           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
+                                     (string-equal (nth 1 e) "B.2")
+                                     (string-equal (nth 3 e) "assigned")))
+                    entries)))
+
+  (check "B.2: block_sig1 via block comment cdc_domain: annotation"
          (let ((entries (gethash "block_sig1" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
                                      (string-equal (nth 3 e) "assigned")))
@@ -221,7 +228,7 @@
            (string-match-p "Domain Clocks" output))
     (check "Output contains sys_clk clock"
            (string-match-p "sys_clk" output))
-    (check "Output contains aux_clock clock (domain_clock: alias)"
+    (check "Output contains aux_clock clock (cdc_clock preferred keyword)"
            (string-match-p "aux_clock" output))
     (check "Output contains *** for crossing_data"
            (string-match-p "\\*\\*\\*.*crossing_data" output))

@@ -7,7 +7,10 @@
 ;; Clock domain detection rules:
 ;;   A.1 - signal/port name ends with "clk" (case-insensitive)
 ;;   A.2 - signal/port inline comment (or preceding block comment) contains
-;;         "dom_clk:" or "domain_clock:"
+;;         one of the following keywords (no argument needed):
+;;           cdc_clock          <- preferred, most readable
+;;           domain_clock:      <- accepted alias
+;;           dom_clk:           <- accepted legacy alias
 ;;   A.3 - signal/port name is listed in `vhdl-cdc-clock'
 ;;
 ;; Signal clock-domain assignment rules:
@@ -17,8 +20,11 @@
 ;;         Any signal that appears in 2+ clock domains (regardless of USAGE)
 ;;         is a CDC concern: the signal is being captured or driven by
 ;;         flip-flops in two different clock domains.
-;;   B.2 - signal declaration (inline or preceding block comment) has
-;;         "clk_dom:CLOCKNAME" or "clock_domain:CLOCKNAME"
+;;   B.2 - signal declaration (inline or preceding block comment) has a
+;;         clock-domain annotation:
+;;           cdc_domain:NAME    <- preferred, most readable
+;;           clock_domain:NAME  <- accepted alias
+;;           clk_dom:NAME       <- accepted legacy alias
 ;;   B.3 - signal connected to a port of an instance whose entity name
 ;;         matches a regexp defined in `vhdl-cdc-clk-domain'
 ;;
@@ -81,12 +87,15 @@ Example:
 (defun vhdl-cdc--clock-method (name comment)
   "Return the clock-detection method string for NAME/COMMENT, or nil.
 Returns \"A.1\", \"A.2\", or \"A.3\" for the first matching rule.
-Rule A.2 matches comments containing \"dom_clk:\" or \"domain_clock:\"."
+Rule A.2 matches comments containing any of:
+  cdc_clock      (preferred — no colon or argument required)
+  domain_clock:  (accepted alias)
+  dom_clk:       (accepted legacy alias)"
   (cond
-   ((string-match-p "clk\\'" (downcase name))                            "A.1")
+   ((string-match-p "clk\\'" (downcase name))                                    "A.1")
    ((and comment
-         (string-match-p "\\(?:dom_clk\\|domain_clock\\):" comment))    "A.2")
-   ((member name vhdl-cdc-clock)                                         "A.3")
+         (string-match-p "\\(?:cdc_clock\\|dom_clk\\|domain_clock\\)\\b" comment)) "A.2")
+   ((member name vhdl-cdc-clock)                                                 "A.3")
    (t nil)))
 
 (defun vhdl-cdc--ignored-p (name)
@@ -111,12 +120,15 @@ Rule A.2 matches comments containing \"dom_clk:\" or \"domain_clock:\"."
     (nreverse ids)))
 
 (defun vhdl-cdc--extract-clk-dom (comment)
-  "Return the clock name from a \"clk_dom:\" or \"clock_domain:\" annotation.
-COMMENT is a string (inline or block comment text).  Returns nil when
-no annotation is present."
+  "Return the clock name from a domain-assignment annotation in COMMENT.
+Recognised keywords (preferred first):
+  cdc_domain:NAME    (preferred)
+  clock_domain:NAME  (accepted alias)
+  clk_dom:NAME       (accepted legacy alias)
+Returns nil when no annotation is present."
   (when (and comment
              (string-match
-              "\\(?:clk_dom\\|clock_domain\\):\\([a-zA-Z][a-zA-Z0-9_]*\\)"
+              "\\(?:cdc_domain\\|clk_dom\\|clock_domain\\):\\([a-zA-Z][a-zA-Z0-9_]*\\)"
               comment))
     (match-string 1 comment)))
 
@@ -597,8 +609,10 @@ DECLS is the full list of signal/port declaration plists."
 
 Identifies domain clocks using:
   A.1 - signal/port name ends with \\\"clk\\\"
-  A.2 - inline comment (or preceding block comment) contains
-        \\\"dom_clk:\\\" or \\\"domain_clock:\\\"
+  A.2 - inline comment (or preceding block comment) contains one of:
+          cdc_clock      (preferred)
+          domain_clock:  (alias)
+          dom_clk:       (legacy alias)
   A.3 - name is in variable `vhdl-cdc-clock'
 
 Assigns signals to clock domains using:
@@ -607,8 +621,10 @@ Assigns signals to clock domains using:
         \"referenced\".  Any signal that appears in 2+ clock domains
         (regardless of USAGE) is a CDC signal: it is being captured or
         driven by flip-flops in two different clock domains.
-  B.2 - declaration comment (inline or preceding block comment) has
-        \\\"clk_dom:CLOCKNAME\\\" or \\\"clock_domain:CLOCKNAME\\\"
+  B.2 - declaration comment (inline or preceding block comment) has one of:
+          cdc_domain:CLOCKNAME    (preferred)
+          clock_domain:CLOCKNAME  (alias)
+          clk_dom:CLOCKNAME       (legacy alias)
   B.3 - signal connected to a port whose entity name matches a regexp
         specified in `vhdl-cdc-clk-domain'
 
