@@ -14,7 +14,9 @@
 ;;   B.1 - signal assigned or referenced in a process whose sensitivity list
 ;;         contains a domain clock.  Each entry carries a USAGE tag:
 ;;         "assigned" (LHS of <=) or "referenced" (read in expression).
-;;         Only "assigned"-in-one / any-entry-in-another creates a CDC issue.
+;;         Any signal that appears in 2+ clock domains (regardless of USAGE)
+;;         is a CDC concern: the signal is being captured or driven by
+;;         flip-flops in two different clock domains.
 ;;   B.2 - signal declaration (inline or preceding block comment) has
 ;;         "clk_dom:CLOCKNAME" or "clock_domain:CLOCKNAME"
 ;;   B.3 - signal connected to a port of an instance whose entity name
@@ -527,17 +529,12 @@ DECLS is the full list of signal/port declaration plists."
           (insert "  (none)\n")))
       (insert "\n")
 
-      ;; Helper: does a signal have at least one "assigned" entry?
-      (cl-flet ((has-assigned-p (entries)
-                  (cl-some (lambda (e)
-                             (string-equal (or (nth 3 e) "assigned") "assigned"))
-                           entries))
-                ;; CDC = multiple distinct clock domains AND at least one assigned
-                (is-cdc-p (entries)
-                  (and (> (length entries) 1)
-                       (cl-some (lambda (e)
-                                  (string-equal (or (nth 3 e) "assigned") "assigned"))
-                                entries))))
+      ;; Helper: CDC = signal appearing in 2+ clock domains (assigned or referenced).
+      ;; A signal read in two clock domains is a CDC concern just as much as one
+      ;; that is written in two domains: it is being captured by flip-flops clocked
+      ;; by two different clocks, so metastability is a risk in both cases.
+      (cl-flet ((is-cdc-p (entries)
+                  (> (length entries) 1)))
 
         ;; Section 4 -- Ignored CDC signals (multi-domain but in vhdl-cdc-ignore)
         (insert "Ignored CDC Signals\n")
@@ -607,8 +604,9 @@ Identifies domain clocks using:
 Assigns signals to clock domains using:
   B.1 - signal assigned or referenced in a process whose sensitivity list
         has a domain clock.  Each entry is tagged \"assigned\" or
-        \"referenced\".  A signal referenced in one domain and assigned in
-        another is a CDC violation.
+        \"referenced\".  Any signal that appears in 2+ clock domains
+        (regardless of USAGE) is a CDC signal: it is being captured or
+        driven by flip-flops in two different clock domains.
   B.2 - declaration comment (inline or preceding block comment) has
         \\\"clk_dom:CLOCKNAME\\\" or \\\"clock_domain:CLOCKNAME\\\"
   B.3 - signal connected to a port whose entity name matches a regexp

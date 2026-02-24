@@ -200,11 +200,9 @@
            (and (> (length entries) 1)
                 (cl-some (lambda (e) (string-equal (nth 3 e) "assigned")) entries))))
 
-  (check "CDC: ref_only_sig is NOT CDC (all referenced, no assigned)"
+  (check "CDC: ref_only_sig IS CDC (referenced in multiple domains, same as cross-domain read)"
          (let ((entries (gethash "ref_only_sig" domains)))
-           (and (> (length entries) 1)
-                (not (cl-some (lambda (e) (string-equal (nth 3 e) "assigned"))
-                              entries)))))
+           (> (length entries) 1)))
 
   (check "CDC: gray_count has multiple domains -> violation (but ignored)"
          (let ((entries (gethash "gray_count" domains)))
@@ -229,8 +227,8 @@
            (string-match-p "\\*\\*\\*.*crossing_data" output))
     (check "Output contains *** for shared_ref_data (ref+assign CDC)"
            (string-match-p "\\*\\*\\*.*shared_ref_data" output))
-    (check "Output does NOT contain *** for ref_only_sig (all referenced)"
-           (not (string-match-p "\\*\\*\\*.*ref_only_sig" output)))
+    (check "Output contains *** for ref_only_sig (referenced in multiple domains = CDC)"
+           (string-match-p "\\*\\*\\*.*ref_only_sig" output))
     (check "Domain listing shows 'assigned' column"
            (string-match-p "assigned" output))
     (check "Domain listing shows 'referenced' column"

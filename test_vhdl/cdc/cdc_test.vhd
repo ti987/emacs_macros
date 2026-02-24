@@ -75,8 +75,9 @@ architecture rtl of cdc_test is
 
   -- -----------------------------------------------------------------------
   -- Signal referenced (read) in both sys_clk and fast_clk processes,
-  -- but never assigned.  Should appear as "referenced" in both domains
-  -- but NOT be a CDC violation (no assignment in any domain).
+  -- but never assigned within the design.  It appears in both domains as
+  -- "referenced" and IS a CDC signal: it is being sampled by flip-flops
+  -- in two different clock domains.
   -- -----------------------------------------------------------------------
   signal ref_only_sig : std_logic;
 
@@ -131,7 +132,7 @@ begin
       if shared_ref_data = '1' then   -- shared_ref_data referenced in fast_clk -> CDC!
         fast_data <= (others => '1');
       end if;
-      if ref_only_sig = '0' then      -- ref_only_sig referenced in fast_clk (NOT CDC)
+      if ref_only_sig = '0' then      -- ref_only_sig referenced in fast_clk -> CDC!
         fast_data(0) <= '1';
       end if;
     end if;
