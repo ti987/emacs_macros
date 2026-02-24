@@ -30,8 +30,7 @@
                                           ; but exercises the lookup)
 
 (setq vhdl-cdc-clk-domain
-      '(("sync_ff" "d" "clk")))          ; B.3 rule used in cdc_test.vhd
-                                          ; (no metacharacters → same as exact match)
+      '(("sync_ff" ("d" . "clk"))))    ; B.3 rule used in cdc_test.vhd
 
 (setq vhdl-cdc-ignore
       '((:name "gray_count" :rationale "gray-coded counter, safe to cross")))
@@ -55,6 +54,9 @@
 
   ;; --- Clock detection ---
   (message "-- Clock detection --")
+
+  (check "buffer-entity-name: finds 'cdc_test' from entity declaration"
+         (string-equal (vhdl-cdc--buffer-entity-name buf) "cdc_test"))
 
   (check "A.1: sys_clk detected as clock"
          (cl-some (lambda (c) (and (string-equal (plist-get c :name) "sys_clk")
@@ -174,7 +176,7 @@
 
   ;; Test B.3 with regexp entity name
   (check "B.3: regexp entity name sync.* also matches sync_ff"
-         (let* ((vhdl-cdc-clk-domain '(("sync.*" "d" "clk")))
+         (let* ((vhdl-cdc-clk-domain '(("sync.*" ("d" . "clk"))))
                 (d3-re (with-current-buffer buf
                          (vhdl-cdc--domains-from-instances buf clock-names)))
                 (entries (gethash "synced_input" d3-re)))
@@ -244,7 +246,9 @@
                    collect (list :name (plist-get d :name)
                                  :rationale "cdc_ignore annotation")))
          (vhdl-cdc-ignore (append vhdl-cdc-ignore decl-ignores))
-         (output (vhdl-cdc--format-output "cdc_test.vhd" clocks domains decls)))
+         ;; entity-name is scanned from the buffer (not from file name)
+         (entity-name (vhdl-cdc--buffer-entity-name buf))
+         (output (vhdl-cdc--format-output entity-name "cdc_test.vhd" clocks domains decls)))
     (check "Output contains 'Domain Clocks' section"
            (string-match-p "Domain Clocks" output))
     (check "Output contains sys_clk clock"
@@ -280,7 +284,38 @@
            (string-match-p "Unknown Clock Domain" output))
     (check "Unknown section precedes Ignored section"
            (< (string-match "Unknown Clock Domain" output)
-              (string-match "Ignored CDC Signals" output))))
+              (string-match "Ignored CDC Signals" output)))
+    (check "Output contains 'Port Domain Mappings' section"
+           (string-match-p "Port Domain Mappings" output))
+    (check "Snippet contains vhdl-cdc-add-port-domains call"
+           (string-match-p "vhdl-cdc-add-port-domains" output))
+    (check "Snippet names the entity cdc_test"
+           (string-match-p "\"cdc_test\"" output))
+    (check "Snippet maps data_in to sys_clk (B.1 assigned)"
+           (string-match-p "\"data_in\".*\\..*\"sys_clk\"" output))
+    (check "Snippet does not include sys_clk itself (it is a clock port, not data)"
+           ;; sys_clk should not appear as a DATA-PORT on the left of a cons pair
+           ;; in the snippet (it is the CLK-PORT side for data_in/rst_n)
+           (not (string-match-p "(\"sys_clk\"" output))))
+
+  ;; --- vhdl-cdc-add-port-domains accumulation ---
+  (message "\n-- vhdl-cdc-add-port-domains --")
+
+  (let ((vhdl-cdc-clk-domain nil))
+    (vhdl-cdc-add-port-domains "mod_a" '(("d" . "clk")))
+    (check "add-port-domains: first call creates entry"
+           (assoc "mod_a" vhdl-cdc-clk-domain))
+    (check "add-port-domains: entry has correct port mapping"
+           (equal (cdr (assoc "mod_a" vhdl-cdc-clk-domain))
+                  '(("d" . "clk"))))
+    (vhdl-cdc-add-port-domains "mod_b" '(("wr" . "wr_clk") ("rd" . "rd_clk")))
+    (check "add-port-domains: second call adds second entry"
+           (and (assoc "mod_a" vhdl-cdc-clk-domain)
+                (assoc "mod_b" vhdl-cdc-clk-domain)))
+    (vhdl-cdc-add-port-domains "mod_a" '(("q" . "clk")))
+    (check "add-port-domains: repeat call replaces existing entry"
+           (equal (cdr (assoc "mod_a" vhdl-cdc-clk-domain))
+                  '(("q" . "clk")))))
 
   ;; --- Regression: vhdl-cdc-clk-domain nil must not crash ---
   (message "\n-- Regression: nil vhdl-cdc-clk-domain returns hash-table --")

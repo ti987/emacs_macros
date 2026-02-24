@@ -57,18 +57,20 @@ Example:
   (setq vhdl-cdc-clock \\='(\"sys_clk\" \"ref_clk\"))")
 
 (defvar vhdl-cdc-clk-domain nil
-  "Rules for determining signal clock domain via instance port connections (rule B.3).
-Each element is a list (ENTITY-REGEXP PORT CLOCK-PORT).
+  "Port-domain rules for instance port connections (rule B.3).
+Each element has the form:
+  (ENTITY-REGEXP (DATA-PORT . CLK-PORT) ...)
 ENTITY-REGEXP is a regexp (case-insensitive) matched against the component/
-entity name of each instantiation.  Use `regexp-quote' for a literal name.
-When a signal is connected to PORT of an instance whose entity name matches
-ENTITY-REGEXP, the signal's clock domain is the clock connected to
-CLOCK-PORT of the same instance.
+entity name of each instantiation.  The remaining elements are cons cells
+mapping a data-port name to the clock-port name that carries its domain.
+When a signal is connected to DATA-PORT of a matching instance, the
+signal's clock domain is whatever is connected to CLK-PORT of that instance.
+Use `vhdl-cdc-add-port-domains' to accumulate entries from sub-modules.
 Example:
   (setq vhdl-cdc-clk-domain
-        \\='((\"sync_ff\"      \"d\"       \"clk\")   ; exact (no metacharacters)
-          (\"cdc_fifo.*\"    \"wr_data\"  \"wr_clk\")  ; any entity starting with cdc_fifo
-          (\"\\\\`sync_.*\\\\'\" \"d\"       \"clk\")))  ; anchored regexp))")
+        \\='((\"sync_ff\"    (\"d\"        . \"clk\"))
+          (\"cdc_fifo.*\"  (\"wr_data\"   . \"wr_clk\")
+                         (\"rd_data\"   . \"rd_clk\"))))")
 
 (defvar vhdl-cdc-ignore nil
   "Signals excluded from CDC violation reporting.
@@ -77,6 +79,23 @@ Example:
   (setq vhdl-cdc-ignore
         \\='((:name \"reset_sync\"  :rationale \"synchronized externally\")
           (:name \"gray_counter\" :rationale \"gray-coded, safe to cross\")))")
+
+(defun vhdl-cdc-add-port-domains (entity-name port-alist)
+  "Register port-domain mappings for ENTITY-NAME in `vhdl-cdc-clk-domain'.
+PORT-ALIST is a list of (DATA-PORT . CLK-PORT) cons cells.
+Replaces any existing entry for ENTITY-NAME so this call is idempotent.
+Intended use: paste the generated snippet from `vhdl-cdc-analyze' output
+into a .dir-locals.el (or eval-buffer) in the parent module directory so
+that `vhdl-cdc-analyze' on the parent correctly resolves port domains
+propagated through sub-module instances.
+Example:
+  (vhdl-cdc-add-port-domains \"sync_fifo\"
+    \\='((\"wr_data\" . \"wr_clk\")
+      (\"rd_data\" . \"rd_clk\")))"
+  (let ((existing (assoc entity-name vhdl-cdc-clk-domain)))
+    (if existing
+        (setcdr existing port-alist)
+      (push (cons entity-name port-alist) vhdl-cdc-clk-domain))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Internal helpers
@@ -136,6 +155,17 @@ excludes NAME from tracking for that specific line only."
       (push (match-string 1 comment) names)
       (setq pos (match-end 0)))
     names))
+
+(defun vhdl-cdc--buffer-entity-name (buf)
+  "Return the entity name declared in BUF, or nil if not found.
+Matches the first  entity NAME is  declaration (case-insensitive)."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char (point-min))
+      (when (re-search-forward
+             "\\bentity[ \t\n]+\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t\n]+is\\b"
+             nil t)
+        (match-string-no-properties 1)))))
 
 (defun vhdl-cdc--record-usage (domains sig clk method line usage)
   "Record SIG belonging to CLK domain in DOMAINS hash table.
@@ -460,18 +490,20 @@ CLOCK-NAMES is the list of known clock name strings."
               (when portmap-str
                 (let ((conns (vhdl-cdc--parse-portmap-connections portmap-str)))
                   (dolist (rule vhdl-cdc-clk-domain)
-                    (let* ((rule-entity   (nth 0 rule))
-                           (rule-port     (downcase (nth 1 rule)))
-                           (rule-clk-port (downcase (nth 2 rule))))
+                    (let* ((rule-entity (car rule))
+                           (port-alist  (cdr rule)))
                       (when (string-match-p (downcase rule-entity)
-                                              (downcase entity-name))
-                        (let ((data-sig (cdr (assoc rule-port conns)))
-                              (clk-sig  (cdr (assoc rule-clk-port conns))))
-                          (when (and data-sig clk-sig
-                                     (member clk-sig clock-names))
-                            (vhdl-cdc--record-usage domains data-sig clk-sig
-                                                    "B.3" portmap-line
-                                                    "assigned")))))))))))))
+                                            (downcase entity-name))
+                        (dolist (pair port-alist)
+                          (let* ((rule-port     (downcase (car pair)))
+                                 (rule-clk-port (downcase (cdr pair)))
+                                 (data-sig      (cdr (assoc rule-port conns)))
+                                 (clk-sig       (cdr (assoc rule-clk-port conns))))
+                            (when (and data-sig clk-sig
+                                       (member clk-sig clock-names))
+                              (vhdl-cdc--record-usage domains data-sig clk-sig
+                                                      "B.3" portmap-line
+                                                      "assigned"))))))))))))))
     domains))
 
 ;;; ---------------------------------------------------------------------------
@@ -495,12 +527,54 @@ over \"referenced\" for the same pair (via `vhdl-cdc--record-usage')."
     merged))
 
 ;;; ---------------------------------------------------------------------------
+;;; Port-domain snippet generator
+;;; ---------------------------------------------------------------------------
+
+(defun vhdl-cdc--port-domain-snippet (entity-name clocks domains decls)
+  "Return an Elisp snippet string for parent-file use (Section 6 of the report).
+ENTITY-NAME is the VHDL entity name from the buffer's entity declaration.
+Only port declarations whose domain clock is also a port of this entity
+are included.  The snippet calls `vhdl-cdc-add-port-domains' which the
+parent file can paste into its .dir-locals.el or eval before analysis."
+  (let* ((clock-names (mapcar (lambda (c) (plist-get c :name)) clocks))
+         (port-decls  (cl-remove-if-not
+                       (lambda (d) (eq (plist-get d :kind) 'port))
+                       decls))
+         (port-names  (mapcar (lambda (d) (plist-get d :name)) port-decls))
+         ;; Clock ports = ports that are themselves domain clocks
+         (clock-ports (cl-intersection clock-names port-names :test #'string-equal))
+         (mappings    '()))
+    (dolist (d port-decls)
+      (let ((name (plist-get d :name)))
+        (unless (member name clock-ports)
+          (let ((entries (gethash name domains)))
+            (when entries
+              ;; Prefer an "assigned" entry; fall back to any entry
+              (let* ((assigned (cl-find "assigned" entries
+                                        :key (lambda (e) (nth 3 e))
+                                        :test #'string-equal))
+                     (entry    (or assigned (car entries)))
+                     (clk      (car entry)))
+                (when (member clk clock-ports)
+                  (push (cons name clk) mappings))))))))
+    (when mappings
+      (let ((sorted (sort mappings (lambda (a b) (string< (car a) (car b))))))
+        (format "(vhdl-cdc-add-port-domains %S\n  '(%s))\n"
+                entity-name
+                (mapconcat
+                 (lambda (pair)
+                   (format "(\"%s\" . \"%s\")" (car pair) (cdr pair)))
+                 sorted
+                 "\n    "))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Output formatting
 ;;; ---------------------------------------------------------------------------
 
-(defun vhdl-cdc--format-output (source-name clocks domains decls)
+(defun vhdl-cdc--format-output (entity-name source-name clocks domains decls)
   "Return a formatted string for the CDC analysis report.
-SOURCE-NAME is the file/buffer name.
+ENTITY-NAME is the VHDL entity name scanned from the buffer (used for the
+generated snippet).  SOURCE-NAME is the file/buffer name for the header.
 CLOCKS is a list of plists (:name :line :method).
 DOMAINS maps signal-name -> ((CLK METHOD LINE USAGE) ...).
 DECLS is the full list of signal/port declaration plists."
@@ -616,6 +690,19 @@ DECLS is the full list of signal/port declaration plists."
                                     (nth 0 e) (nth 2 e) (nth 1 e)
                                     (or (nth 3 e) "assigned"))))))
             (insert "  (none found)\n")))))
+
+    ;; Section 6 -- Generated Elisp snippet for parent instantiation (rule B.3)
+    (let ((snippet (vhdl-cdc--port-domain-snippet entity-name clocks domains decls)))
+      (insert "\nPort Domain Mappings for Parent Files\n")
+      (insert "--------------------------------------\n")
+      (if snippet
+          (progn
+            (insert ";; Paste into the parent module's .dir-locals.el (or eval it\n")
+            (insert ";; before running vhdl-cdc-analyze on the parent buffer) so\n")
+            (insert ";; that port domains propagated through this sub-module are known.\n")
+            (insert ";; Each pair: (DATA-PORT . CLK-PORT)\n\n")
+            (insert snippet))
+        (insert "  (no port-domain mappings; no non-clock ports have a determined domain)\n")))
     (buffer-string)))
 
 ;;; ---------------------------------------------------------------------------
@@ -639,7 +726,8 @@ Assigns signals to clock domains using:
   B.2 - declaration comment (inline or preceding block comment) has
         cdc_domain:CLOCKNAME
   B.3 - signal connected to a port whose entity name matches a regexp
-        specified in `vhdl-cdc-clk-domain'
+        specified in `vhdl-cdc-clk-domain'.  Use `vhdl-cdc-add-port-domains'
+        to register sub-module port mappings.
 
 Ignore annotations:
   cdc_ignore         - in a declaration comment: signal is placed in the
@@ -660,6 +748,9 @@ Configuration:
   (interactive)
   (let* ((src-buf     (current-buffer))
          (source-name (or (buffer-file-name) (buffer-name)))
+         ;; Derive entity name from the VHDL entity declaration; fall back to file base name
+         (entity-name (or (vhdl-cdc--buffer-entity-name src-buf)
+                          (file-name-base (or source-name "unknown"))))
          ;; Phase A: declarations & clocks
          (decls       (vhdl-cdc--scan-declarations src-buf))
          (clocks      (vhdl-cdc--find-clocks decls))
@@ -682,7 +773,7 @@ Configuration:
          output)
     ;; Bind the combined ignore list for the duration of output formatting
     (let ((vhdl-cdc-ignore (append vhdl-cdc-ignore decl-ignores)))
-      (setq output (vhdl-cdc--format-output source-name clocks domains decls)))
+      (setq output (vhdl-cdc--format-output entity-name source-name clocks domains decls)))
     (with-current-buffer out-buf
       (setq buffer-read-only nil)
       (erase-buffer)
