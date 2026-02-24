@@ -68,6 +68,19 @@ architecture rtl of cdc_test is
   signal gray_count : unsigned(3 downto 0);
 
   -- -----------------------------------------------------------------------
+  -- Signal assigned in sys_clk process, referenced in fast_clk process.
+  -- This tests the reference+assignment CDC detection (B.1 ref/assign).
+  -- -----------------------------------------------------------------------
+  signal shared_ref_data : std_logic;
+
+  -- -----------------------------------------------------------------------
+  -- Signal referenced (read) in both sys_clk and fast_clk processes,
+  -- but never assigned.  Should appear as "referenced" in both domains
+  -- but NOT be a CDC violation (no assignment in any domain).
+  -- -----------------------------------------------------------------------
+  signal ref_only_sig : std_logic;
+
+  -- -----------------------------------------------------------------------
   -- Signal whose domain is determined by instance port connection (B.3)
   -- The sync_ff entity instance will tie this to sys_clk domain.
   -- -----------------------------------------------------------------------
@@ -91,7 +104,11 @@ begin
       counter     <= counter + 1;
       stage1_data <= data_in;
       sys_valid   <= '1';
-      crossing_data <= stage1_data;   -- assigned in sys_clk process
+      crossing_data   <= stage1_data;   -- assigned in sys_clk process
+      shared_ref_data <= sys_valid;     -- assigned in sys_clk; referenced in fast_clk
+      if ref_only_sig = '1' then        -- ref_only_sig referenced in sys_clk
+        counter <= counter + 2;
+      end if;
     end if;
   end process p_sys;
 
@@ -111,6 +128,12 @@ begin
       fast_data    <= std_logic_vector(fast_counter) & x"0";
       crossing_data <= fast_data;     -- ALSO assigned in fast_clk process -> CDC!
       gray_count   <= gray_count + 1; -- ALSO assigned in fast_clk -> CDC, but ignored
+      if shared_ref_data = '1' then   -- shared_ref_data referenced in fast_clk -> CDC!
+        fast_data <= (others => '1');
+      end if;
+      if ref_only_sig = '0' then      -- ref_only_sig referenced in fast_clk (NOT CDC)
+        fast_data(0) <= '1';
+      end if;
     end if;
   end process p_fast;
 

@@ -11,12 +11,14 @@
 ;;   A.3 - signal/port name is listed in `vhdl-cdc-clock'
 ;;
 ;; Signal clock-domain assignment rules:
-;;   B.1 - signal assigned in a process whose sensitivity list contains a
-;;         domain clock
+;;   B.1 - signal assigned or referenced in a process whose sensitivity list
+;;         contains a domain clock.  Each entry carries a USAGE tag:
+;;         "assigned" (LHS of <=) or "referenced" (read in expression).
+;;         Only "assigned"-in-one / any-entry-in-another creates a CDC issue.
 ;;   B.2 - signal declaration (inline or preceding block comment) has
 ;;         "clk_dom:CLOCKNAME" or "clock_domain:CLOCKNAME"
-;;   B.3 - signal connected to a pre-specified entity/port pair defined in
-;;         `vhdl-cdc-clk-domain'
+;;   B.3 - signal connected to a port of an instance whose entity name
+;;         matches a regexp defined in `vhdl-cdc-clk-domain'
 ;;
 ;; Block comment annotation (rules A.2, B.2):
 ;;   A block is a pure-comment line followed by consecutive signal/port
@@ -28,7 +30,7 @@
 ;;
 ;; Configuration variables:
 ;;   vhdl-cdc-clock      - extra clock signal names
-;;   vhdl-cdc-clk-domain - instance-port domain rules
+;;   vhdl-cdc-clk-domain - instance-port domain rules (entity name is a regexp)
 ;;   vhdl-cdc-ignore     - signals excluded from CDC violation reporting
 
 (require 'cl-lib)
@@ -45,13 +47,17 @@ Example:
 
 (defvar vhdl-cdc-clk-domain nil
   "Rules for determining signal clock domain via instance port connections (rule B.3).
-Each element is a list (ENTITY PORT CLOCK-PORT).
-When a signal is connected to PORT of an instance of ENTITY, the signal's
-clock domain is the clock connected to CLOCK-PORT of the same instance.
+Each element is a list (ENTITY-REGEXP PORT CLOCK-PORT).
+ENTITY-REGEXP is a regexp (case-insensitive) matched against the component/
+entity name of each instantiation.  Use `regexp-quote' for a literal name.
+When a signal is connected to PORT of an instance whose entity name matches
+ENTITY-REGEXP, the signal's clock domain is the clock connected to
+CLOCK-PORT of the same instance.
 Example:
   (setq vhdl-cdc-clk-domain
-        \\='((\"sync_ff\"  \"d\"       \"clk\")
-          (\"cdc_fifo\"  \"wr_data\"  \"wr_clk\")))")
+        \\='((\"sync_ff\"      \"d\"       \"clk\")   ; exact (no metacharacters)
+          (\"cdc_fifo.*\"    \"wr_data\"  \"wr_clk\")  ; any entity starting with cdc_fifo
+          (\"\\\\`sync_.*\\\\'\" \"d\"       \"clk\")))  ; anchored regexp))")
 
 (defvar vhdl-cdc-ignore nil
   "Signals excluded from CDC violation reporting.
@@ -111,6 +117,26 @@ no annotation is present."
               "\\(?:clk_dom\\|clock_domain\\):\\([a-zA-Z][a-zA-Z0-9_]*\\)"
               comment))
     (match-string 1 comment)))
+
+(defun vhdl-cdc--record-usage (domains sig clk method line usage)
+  "Record SIG belonging to CLK domain in DOMAINS hash table.
+Each entry has the form (CLK METHOD LINE USAGE).
+USAGE is \"assigned\" or \"referenced\".
+\"assigned\" takes priority over \"referenced\" for the same (sig clk) pair:
+if an existing entry for the same CLK has USAGE \"referenced\" and the new
+entry has \"assigned\", the old entry is replaced."
+  (let* ((current  (gethash sig domains))
+         (existing (cl-find clk current :key #'car :test #'string-equal)))
+    (cond
+     ((null existing)
+      (puthash sig (cons (list clk method line usage) current) domains))
+     ((and (string-equal (nth 3 existing) "referenced")
+           (string-equal usage "assigned"))
+      ;; Upgrade referenced → assigned
+      (puthash sig
+               (cons (list clk method line usage)
+                     (cl-remove existing current :test #'eq))
+               domains)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Declaration scanner (signals and ports)
@@ -250,10 +276,56 @@ Each plist has:
                 result))))
     (nreverse result)))
 
-(defun vhdl-cdc--domains-from-processes (buf clock-names)
-  "Rule B.1: return domain alist from process analysis in BUF.
+(defun vhdl-cdc--references-in-region (buf start end decl-names exclude-names)
+  "Return list of (NAME . LINE) for signal/port reads in BUF from START to END.
+Only names present in DECL-NAMES (and absent from EXCLUDE-NAMES) are returned.
+Names that appear as the LHS of a signal assignment on the same line are not
+counted as references from that line (they are handled by
+`vhdl-cdc--assignments-in-region').
+Results are deduplicated by (name . line)."
+  (let ((assign-re "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)\
+\\(?:[ \t]*([ \t]*[^)]*[ \t]*)\\)?[ \t]*<=")
+        (id-re     "\\b\\([a-zA-Z][a-zA-Z0-9_]*\\)\\b")
+        (result    '()))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char start)
+        (while (< (point) end)
+          (let* ((text    (buffer-substring-no-properties
+                           (line-beginning-position) (line-end-position)))
+                 (linenum (line-number-at-pos))
+                 ;; Strip inline comment
+                 (code    (if (string-match "--" text)
+                              (substring text 0 (match-beginning 0))
+                            text))
+                 ;; LHS identifier when this line is an assignment
+                 (lhs     (when (string-match assign-re code)
+                            (match-string 1 code)))
+                 ;; Scan: RHS of assignment, or whole line if not an assignment
+                 (scan    (if (and lhs (string-match "<=" code))
+                              (substring code (match-end 0))
+                            code))
+                 (pos     0))
+            (while (string-match id-re scan pos)
+              (let ((id (match-string 1 scan)))
+                (when (and (member id decl-names)
+                           (not (member id exclude-names)))
+                  (push (cons id linenum) result)))
+              (setq pos (match-end 0))))
+          (forward-line 1))))
+    (cl-remove-duplicates
+     (nreverse result)
+     :test (lambda (a b) (and (string-equal (car a) (car b))
+                              (= (cdr a) (cdr b)))))))
+
+(defun vhdl-cdc--domains-from-processes (buf clock-names decl-names)
+  "Rule B.1: return domain hash-table from process analysis in BUF.
 CLOCK-NAMES is a list of known clock name strings.
-Returns an alist: ((SIG-NAME . ((CLK-NAME METHOD LINE) ...)) ...)"
+DECL-NAMES is a list of all declared signal/port name strings used for
+reference scanning.  Clock names are excluded from reference results.
+Each entry has the form (CLK \"B.1\" LINE USAGE) where USAGE is
+\"assigned\" (LHS of <=) or \"referenced\" (read in an expression).
+\"assigned\" takes priority over \"referenced\" for the same (sig clk) pair."
   (let ((domains (make-hash-table :test 'equal)))
     (dolist (block (vhdl-cdc--find-process-blocks buf))
       (let* ((sens      (plist-get block :sens-list))
@@ -261,15 +333,22 @@ Returns an alist: ((SIG-NAME . ((CLK-NAME METHOD LINE) ...)) ...)"
              (bstart    (plist-get block :body-start))
              (bend      (plist-get block :body-end)))
         (when clks-here
-          (dolist (assign (vhdl-cdc--assignments-in-region buf bstart bend))
-            (let ((sig  (car assign))
-                  (line (cdr assign)))
-              (dolist (clk clks-here)
-                (let ((current (gethash sig domains)))
-                  (unless (cl-find clk current :key #'car :test #'string-equal)
-                    (puthash sig
-                             (cons (list clk "B.1" line) current)
-                             domains)))))))))
+          (let ((assigns (vhdl-cdc--assignments-in-region buf bstart bend))
+                (refs    (vhdl-cdc--references-in-region  buf bstart bend
+                                                           decl-names
+                                                           clock-names)))
+            ;; Record assignments first (they take priority)
+            (dolist (assign assigns)
+              (let ((sig  (car assign))
+                    (line (cdr assign)))
+                (dolist (clk clks-here)
+                  (vhdl-cdc--record-usage domains sig clk "B.1" line "assigned"))))
+            ;; Record references (only added if no "assigned" entry for same clk)
+            (dolist (ref refs)
+              (let ((sig  (car ref))
+                    (line (cdr ref)))
+                (dolist (clk clks-here)
+                  (vhdl-cdc--record-usage domains sig clk "B.1" line "referenced"))))))))
     domains))
 
 ;;; ---------------------------------------------------------------------------
@@ -295,7 +374,7 @@ CLOCK-NAMES is the list of known clock name strings."
                  (current (gethash name domains)))
             (unless (cl-find clk current :key #'car :test #'string-equal)
               (puthash name
-                       (cons (list clk "B.2" line) current)
+                       (cons (list clk "B.2" line "assigned") current)
                        domains))))))
     domains))
 
@@ -351,19 +430,15 @@ CLOCK-NAMES is the list of known clock name strings."
                     (let* ((rule-entity   (nth 0 rule))
                            (rule-port     (downcase (nth 1 rule)))
                            (rule-clk-port (downcase (nth 2 rule))))
-                      (when (string-equal (downcase entity-name)
-                                          (downcase rule-entity))
+                      (when (string-match-p (downcase rule-entity)
+                                              (downcase entity-name))
                         (let ((data-sig (cdr (assoc rule-port conns)))
                               (clk-sig  (cdr (assoc rule-clk-port conns))))
                           (when (and data-sig clk-sig
                                      (member clk-sig clock-names))
-                            (let ((current (gethash data-sig domains)))
-                              (unless (cl-find clk-sig current
-                                               :key #'car :test #'string-equal)
-                                (puthash data-sig
-                                         (cons (list clk-sig "B.3" portmap-line)
-                                               current)
-                                         domains)))))))))))))))
+                            (vhdl-cdc--record-usage domains data-sig clk-sig
+                                                    "B.3" portmap-line
+                                                    "assigned")))))))))))))
     domains))
 
 ;;; ---------------------------------------------------------------------------
@@ -372,17 +447,17 @@ CLOCK-NAMES is the list of known clock name strings."
 
 (defun vhdl-cdc--merge-domains (&rest tables)
   "Merge multiple domain hash-tables into one.
-Each table maps SIG-NAME -> ((CLK METHOD LINE) ...).
-Duplicate (SIG . CLK) pairs are deduplicated."
+Each table maps SIG-NAME -> ((CLK METHOD LINE USAGE) ...).
+Duplicate (SIG . CLK) pairs are deduplicated; \"assigned\" takes priority
+over \"referenced\" for the same pair (via `vhdl-cdc--record-usage')."
   (let ((merged (make-hash-table :test 'equal)))
     (dolist (tbl tables)
       (maphash
        (lambda (sig entries)
          (dolist (entry entries)
-           (let* ((clk     (car entry))
-                  (current (gethash sig merged)))
-             (unless (cl-find clk current :key #'car :test #'string-equal)
-               (puthash sig (cons entry current) merged)))))
+           (vhdl-cdc--record-usage merged sig
+                                   (nth 0 entry) (nth 1 entry) (nth 2 entry)
+                                   (or (nth 3 entry) "assigned"))))
        tbl))
     merged))
 
@@ -394,7 +469,7 @@ Duplicate (SIG . CLK) pairs are deduplicated."
   "Return a formatted string for the CDC analysis report.
 SOURCE-NAME is the file/buffer name.
 CLOCKS is a list of plists (:name :line :method).
-DOMAINS maps signal-name -> ((CLK METHOD LINE) ...).
+DOMAINS maps signal-name -> ((CLK METHOD LINE USAGE) ...).
 DECLS is the full list of signal/port declaration plists."
   (with-temp-buffer
     (insert (format "VHDL Clock Domain Analysis\n"))
@@ -424,12 +499,14 @@ DECLS is the full list of signal/port declaration plists."
            (lambda (sig entries)
              (dolist (e entries)
                (when (string-equal (car e) clk-name)
-                 (push (list sig (nth 1 e) (nth 2 e)) sigs))))
+                 (push (list sig (nth 1 e) (nth 2 e)
+                             (or (nth 3 e) "assigned"))
+                       sigs))))
            domains)
           (if sigs
               (dolist (s (sort sigs (lambda (a b) (string< (car a) (car b)))))
-                (insert (format "  %-30s  line %4d  [%s]\n"
-                                (nth 0 s) (nth 2 s) (nth 1 s))))
+                (insert (format "  %-30s  line %4d  [%s]  %s\n"
+                                (nth 0 s) (nth 2 s) (nth 1 s) (nth 3 s))))
             (insert "  (no signals found)\n")))
         (insert "\n"))
 
@@ -450,53 +527,67 @@ DECLS is the full list of signal/port declaration plists."
           (insert "  (none)\n")))
       (insert "\n")
 
-      ;; Section 4 -- Ignored CDC signals (multi-domain but in vhdl-cdc-ignore)
-      (insert "Ignored CDC Signals\n")
-      (insert "-------------------\n")
-      (let ((ignored-sigs '()))
-        (maphash
-         (lambda (sig entries)
-           (when (and (> (length entries) 1)
-                      (vhdl-cdc--ignored-p sig))
-             (push (cons sig entries) ignored-sigs)))
-         domains)
-        (if ignored-sigs
-            (dolist (item (sort ignored-sigs
-                                (lambda (a b) (string< (car a) (car b)))))
-              (let* ((sig-name (car item))
-                     (entries  (cdr item)))
-                (insert (format "  %s\n" sig-name))
-                (let ((rationale (vhdl-cdc--ignore-rationale sig-name)))
-                  (when rationale
-                    (insert (format "    rationale: %s\n" rationale))))
-                (dolist (e (sort (copy-sequence entries)
-                                 (lambda (a b) (string< (car a) (car b)))))
-                  (insert (format "    domain %-20s  line %4d  [%s]\n"
-                                  (nth 0 e) (nth 2 e) (nth 1 e))))))
-          (insert "  (none)\n")))
-      (insert "\n")
+      ;; Helper: does a signal have at least one "assigned" entry?
+      (cl-flet ((has-assigned-p (entries)
+                  (cl-some (lambda (e)
+                             (string-equal (or (nth 3 e) "assigned") "assigned"))
+                           entries))
+                ;; CDC = multiple distinct clock domains AND at least one assigned
+                (is-cdc-p (entries)
+                  (and (> (length entries) 1)
+                       (cl-some (lambda (e)
+                                  (string-equal (or (nth 3 e) "assigned") "assigned"))
+                                entries))))
 
-      ;; Section 5 -- CDC violations (non-ignored multi-domain signals)
-      (insert "CDC Signals (Multiple Clock Domains)\n")
-      (insert "-------------------------------------\n")
-      (let ((cdc-sigs '()))
-        (maphash
-         (lambda (sig entries)
-           (when (and (> (length entries) 1)
-                      (not (vhdl-cdc--ignored-p sig)))
-             (push (cons sig entries) cdc-sigs)))
-         domains)
-        (if cdc-sigs
-            (dolist (item (sort cdc-sigs
-                                (lambda (a b) (string< (car a) (car b)))))
-              (let* ((sig-name (car item))
-                     (entries  (cdr item)))
-                (insert (format "*** %s\n" sig-name))
-                (dolist (e (sort (copy-sequence entries)
-                                 (lambda (a b) (string< (car a) (car b)))))
-                  (insert (format "       domain %-20s  line %4d  [%s]\n"
-                                  (nth 0 e) (nth 2 e) (nth 1 e))))))
-          (insert "  (none found)\n"))))
+        ;; Section 4 -- Ignored CDC signals (multi-domain but in vhdl-cdc-ignore)
+        (insert "Ignored CDC Signals\n")
+        (insert "-------------------\n")
+        (let ((ignored-sigs '()))
+          (maphash
+           (lambda (sig entries)
+             (when (and (is-cdc-p entries)
+                        (vhdl-cdc--ignored-p sig))
+               (push (cons sig entries) ignored-sigs)))
+           domains)
+          (if ignored-sigs
+              (dolist (item (sort ignored-sigs
+                                  (lambda (a b) (string< (car a) (car b)))))
+                (let* ((sig-name (car item))
+                       (entries  (cdr item)))
+                  (insert (format "  %s\n" sig-name))
+                  (let ((rationale (vhdl-cdc--ignore-rationale sig-name)))
+                    (when rationale
+                      (insert (format "    rationale: %s\n" rationale))))
+                  (dolist (e (sort (copy-sequence entries)
+                                   (lambda (a b) (string< (car a) (car b)))))
+                    (insert (format "    domain %-20s  line %4d  [%s]  %s\n"
+                                    (nth 0 e) (nth 2 e) (nth 1 e)
+                                    (or (nth 3 e) "assigned"))))))
+            (insert "  (none)\n")))
+        (insert "\n")
+
+        ;; Section 5 -- CDC violations (non-ignored multi-domain with >=1 assigned)
+        (insert "CDC Signals (Multiple Clock Domains)\n")
+        (insert "-------------------------------------\n")
+        (let ((cdc-sigs '()))
+          (maphash
+           (lambda (sig entries)
+             (when (and (is-cdc-p entries)
+                        (not (vhdl-cdc--ignored-p sig)))
+               (push (cons sig entries) cdc-sigs)))
+           domains)
+          (if cdc-sigs
+              (dolist (item (sort cdc-sigs
+                                  (lambda (a b) (string< (car a) (car b)))))
+                (let* ((sig-name (car item))
+                       (entries  (cdr item)))
+                  (insert (format "*** %s\n" sig-name))
+                  (dolist (e (sort (copy-sequence entries)
+                                   (lambda (a b) (string< (car a) (car b)))))
+                    (insert (format "       domain %-20s  line %4d  [%s]  %s\n"
+                                    (nth 0 e) (nth 2 e) (nth 1 e)
+                                    (or (nth 3 e) "assigned"))))))
+            (insert "  (none found)\n")))))
     (buffer-string)))
 
 ;;; ---------------------------------------------------------------------------
@@ -514,16 +605,21 @@ Identifies domain clocks using:
   A.3 - name is in variable `vhdl-cdc-clock'
 
 Assigns signals to clock domains using:
-  B.1 - signal assigned in a process whose sensitivity list has a domain clock
+  B.1 - signal assigned or referenced in a process whose sensitivity list
+        has a domain clock.  Each entry is tagged \"assigned\" or
+        \"referenced\".  A signal referenced in one domain and assigned in
+        another is a CDC violation.
   B.2 - declaration comment (inline or preceding block comment) has
         \\\"clk_dom:CLOCKNAME\\\" or \\\"clock_domain:CLOCKNAME\\\"
-  B.3 - signal connected to a port specified in `vhdl-cdc-clk-domain'
+  B.3 - signal connected to a port whose entity name matches a regexp
+        specified in `vhdl-cdc-clk-domain'
 
 Block comment annotation: a keyword in the leading comment line of a
 declaration block (comment line(s) then declarations then blank line)
 applies the keyword to every signal/port in that block.
 
 Output is displayed in the *VHDL CDC Analysis* buffer.
+The domain group listings show an \"assigned\" or \"referenced\" column.
 Signals in `vhdl-cdc-ignore' that cross domains are listed in a
 separate \\\"Ignored CDC Signals\\\" section before the CDC violations.
 
@@ -538,8 +634,10 @@ Configuration:
          (decls       (vhdl-cdc--scan-declarations src-buf))
          (clocks      (vhdl-cdc--find-clocks decls))
          (clock-names (mapcar (lambda (c) (plist-get c :name)) clocks))
+         (decl-names  (mapcar (lambda (d) (plist-get d :name)) decls))
          ;; Phase B: signal domain assignment
-         (dom-b1      (vhdl-cdc--domains-from-processes src-buf clock-names))
+         (dom-b1      (vhdl-cdc--domains-from-processes src-buf clock-names
+                                                        decl-names))
          (dom-b2      (vhdl-cdc--domains-from-comments  decls clock-names))
          (dom-b3      (vhdl-cdc--domains-from-instances src-buf clock-names))
          ;; Merge all domain tables

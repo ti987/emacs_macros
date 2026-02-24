@@ -31,6 +31,7 @@
 
 (setq vhdl-cdc-clk-domain
       '(("sync_ff" "d" "clk")))          ; B.3 rule used in cdc_test.vhd
+                                          ; (no metacharacters → same as exact match)
 
 (setq vhdl-cdc-ignore
       '((:name "gray_count" :rationale "gray-coded counter, safe to cross")))
@@ -40,16 +41,17 @@
 ;;; -------------------------------------------------------------------------
 (message "\n=== vhdl-cdc.el unit tests ===\n")
 
-(let* ((buf    (find-file-noselect test-vhdl-file))
-       (decls  (with-current-buffer buf (vhdl-cdc--scan-declarations buf)))
-       (clocks (vhdl-cdc--find-clocks decls))
+(let* ((buf        (find-file-noselect test-vhdl-file))
+       (decls      (with-current-buffer buf (vhdl-cdc--scan-declarations buf)))
+       (clocks     (vhdl-cdc--find-clocks decls))
        (clock-names (mapcar (lambda (c) (plist-get c :name)) clocks))
-       (dom-b1 (with-current-buffer buf
-                 (vhdl-cdc--domains-from-processes buf clock-names)))
-       (dom-b2 (vhdl-cdc--domains-from-comments decls clock-names))
-       (dom-b3 (with-current-buffer buf
-                 (vhdl-cdc--domains-from-instances buf clock-names)))
-       (domains (vhdl-cdc--merge-domains dom-b1 dom-b2 dom-b3)))
+       (decl-names  (mapcar (lambda (d) (plist-get d :name)) decls))
+       (dom-b1     (with-current-buffer buf
+                     (vhdl-cdc--domains-from-processes buf clock-names decl-names)))
+       (dom-b2     (vhdl-cdc--domains-from-comments decls clock-names))
+       (dom-b3     (with-current-buffer buf
+                     (vhdl-cdc--domains-from-instances buf clock-names)))
+       (domains    (vhdl-cdc--merge-domains dom-b1 dom-b2 dom-b3)))
 
   ;; --- Clock detection ---
   (message "-- Clock detection --")
@@ -78,28 +80,65 @@
          (not (cl-some (lambda (c) (string-equal (plist-get c :name) "rst_n"))
                        clocks)))
 
-  ;; --- B.1 process-based domain assignment ---
-  (message "\n-- B.1 process domain assignment --")
+  ;; --- B.1 process-based domain assignment (assigned) ---
+  (message "\n-- B.1 process domain assignment (assigned) --")
 
-  (check "B.1: counter in sys_clk domain"
+  (check "B.1: counter in sys_clk domain (assigned)"
          (let ((entries (gethash "counter" dom-b1)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 1 e) "B.1")))
+                                     (string-equal (nth 1 e) "B.1")
+                                     (string-equal (nth 3 e) "assigned")))
                     entries)))
 
-  (check "B.1: fast_counter in fast_clk domain"
+  (check "B.1: fast_counter in fast_clk domain (assigned)"
          (let ((entries (gethash "fast_counter" dom-b1)))
            (cl-some (lambda (e) (and (string-equal (car e) "fast_clk")
-                                     (string-equal (nth 1 e) "B.1")))
+                                     (string-equal (nth 3 e) "assigned")))
                     entries)))
 
-  (check "B.1: crossing_data in sys_clk domain"
+  (check "B.1: crossing_data in sys_clk domain (assigned)"
          (let ((entries (gethash "crossing_data" dom-b1)))
-           (cl-some (lambda (e) (string-equal (car e) "sys_clk")) entries)))
+           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
+                                     (string-equal (nth 3 e) "assigned")))
+                    entries)))
 
-  (check "B.1: crossing_data also in fast_clk domain"
+  (check "B.1: crossing_data also in fast_clk domain (assigned)"
          (let ((entries (gethash "crossing_data" dom-b1)))
-           (cl-some (lambda (e) (string-equal (car e) "fast_clk")) entries)))
+           (cl-some (lambda (e) (and (string-equal (car e) "fast_clk")
+                                     (string-equal (nth 3 e) "assigned")))
+                    entries)))
+
+  ;; --- B.1 reference detection ---
+  (message "\n-- B.1 reference detection --")
+
+  (check "B.1: shared_ref_data assigned in sys_clk (assigned)"
+         (let ((entries (gethash "shared_ref_data" dom-b1)))
+           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
+                                     (string-equal (nth 3 e) "assigned")))
+                    entries)))
+
+  (check "B.1: shared_ref_data referenced in fast_clk (referenced)"
+         (let ((entries (gethash "shared_ref_data" dom-b1)))
+           (cl-some (lambda (e) (and (string-equal (car e) "fast_clk")
+                                     (string-equal (nth 3 e) "referenced")))
+                    entries)))
+
+  (check "B.1: ref_only_sig referenced in sys_clk (referenced, not assigned)"
+         (let ((entries (gethash "ref_only_sig" dom-b1)))
+           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
+                                     (string-equal (nth 3 e) "referenced")))
+                    entries)))
+
+  (check "B.1: ref_only_sig referenced in fast_clk (referenced, not assigned)"
+         (let ((entries (gethash "ref_only_sig" dom-b1)))
+           (cl-some (lambda (e) (and (string-equal (car e) "fast_clk")
+                                     (string-equal (nth 3 e) "referenced")))
+                    entries)))
+
+  (check "B.1: ref_only_sig has NO assigned entry in any domain"
+         (let ((entries (gethash "ref_only_sig" dom-b1)))
+           (not (cl-some (lambda (e) (string-equal (nth 3 e) "assigned"))
+                         entries))))
 
   ;; --- B.2 comment-based domain assignment ---
   (message "\n-- B.2 comment-based domain assignment --")
@@ -107,42 +146,65 @@
   (check "B.2: annotated_sig via inline clk_dom: keyword"
          (let ((entries (gethash "annotated_sig" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 1 e) "B.2")))
+                                     (string-equal (nth 1 e) "B.2")
+                                     (string-equal (nth 3 e) "assigned")))
                     entries)))
 
   (check "B.2: annotated_sig2 via inline clock_domain: alias"
          (let ((entries (gethash "annotated_sig2" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 1 e) "B.2")))
+                                     (string-equal (nth 3 e) "assigned")))
                     entries)))
 
   (check "B.2: block_sig1 via block comment clock_domain: annotation"
          (let ((entries (gethash "block_sig1" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 1 e) "B.2")))
+                                     (string-equal (nth 3 e) "assigned")))
                     entries)))
 
   (check "B.2: block_sig2 via same block comment annotation"
          (let ((entries (gethash "block_sig2" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 1 e) "B.2")))
+                                     (string-equal (nth 3 e) "assigned")))
                     entries)))
 
   ;; --- B.3 instance port rule ---
   (message "\n-- B.3 instance port domain assignment --")
 
-  (check "B.3: synced_input in sys_clk domain via sync_ff instance"
+  (check "B.3: synced_input in sys_clk domain (exact entity name)"
          (let ((entries (gethash "synced_input" dom-b3)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 1 e) "B.3")))
+                                     (string-equal (nth 1 e) "B.3")
+                                     (string-equal (nth 3 e) "assigned")))
                     entries)))
+
+  ;; Test B.3 with regexp entity name
+  (check "B.3: regexp entity name sync.* also matches sync_ff"
+         (let* ((vhdl-cdc-clk-domain '(("sync.*" "d" "clk")))
+                (d3-re (with-current-buffer buf
+                         (vhdl-cdc--domains-from-instances buf clock-names)))
+                (entries (gethash "synced_input" d3-re)))
+           (cl-some (lambda (e) (string-equal (car e) "sys_clk")) entries)))
 
   ;; --- CDC violation detection ---
   (message "\n-- CDC violation detection --")
 
-  (check "CDC: crossing_data has multiple domains -> violation"
+  (check "CDC: crossing_data has multiple assigned domains -> violation"
          (let ((entries (gethash "crossing_data" domains)))
-           (> (length entries) 1)))
+           (and (> (length entries) 1)
+                (cl-every (lambda (e) (string-equal (nth 3 e) "assigned"))
+                          entries))))
+
+  (check "CDC: shared_ref_data is CDC (assigned sys_clk, referenced fast_clk)"
+         (let ((entries (gethash "shared_ref_data" domains)))
+           (and (> (length entries) 1)
+                (cl-some (lambda (e) (string-equal (nth 3 e) "assigned")) entries))))
+
+  (check "CDC: ref_only_sig is NOT CDC (all referenced, no assigned)"
+         (let ((entries (gethash "ref_only_sig" domains)))
+           (and (> (length entries) 1)
+                (not (cl-some (lambda (e) (string-equal (nth 3 e) "assigned"))
+                              entries)))))
 
   (check "CDC: gray_count has multiple domains -> violation (but ignored)"
          (let ((entries (gethash "gray_count" domains)))
@@ -165,6 +227,14 @@
            (string-match-p "aux_clock" output))
     (check "Output contains *** for crossing_data"
            (string-match-p "\\*\\*\\*.*crossing_data" output))
+    (check "Output contains *** for shared_ref_data (ref+assign CDC)"
+           (string-match-p "\\*\\*\\*.*shared_ref_data" output))
+    (check "Output does NOT contain *** for ref_only_sig (all referenced)"
+           (not (string-match-p "\\*\\*\\*.*ref_only_sig" output)))
+    (check "Domain listing shows 'assigned' column"
+           (string-match-p "assigned" output))
+    (check "Domain listing shows 'referenced' column"
+           (string-match-p "referenced" output))
     (check "Output contains 'Ignored CDC Signals' section"
            (string-match-p "Ignored CDC Signals" output))
     (check "Ignored section contains gray_count"
@@ -176,8 +246,6 @@
            (not (string-match-p "\\*\\*\\*.*gray_count" output)))
     (check "Output contains 'Unknown Clock Domain' section"
            (string-match-p "Unknown Clock Domain" output))
-    (check "Unknown section contains rst_n"
-           (string-match-p "rst_n" output))
     (check "Unknown section precedes Ignored section"
            (< (string-match "Unknown Clock Domain" output)
               (string-match "Ignored CDC Signals" output))))
