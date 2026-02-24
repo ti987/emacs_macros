@@ -7,10 +7,7 @@
 ;; Clock domain detection rules:
 ;;   A.1 - signal/port name ends with "clk" (case-insensitive)
 ;;   A.2 - signal/port inline comment (or preceding block comment) contains
-;;         one of the following keywords (no argument needed):
-;;           cdc_clock          <- preferred, most readable
-;;           domain_clock:      <- accepted alias
-;;           dom_clk:           <- accepted legacy alias
+;;         the keyword  cdc_clock  (no colon or argument needed)
 ;;   A.3 - signal/port name is listed in `vhdl-cdc-clock'
 ;;
 ;; Signal clock-domain assignment rules:
@@ -20,11 +17,8 @@
 ;;         Any signal that appears in 2+ clock domains (regardless of USAGE)
 ;;         is a CDC concern: the signal is being captured or driven by
 ;;         flip-flops in two different clock domains.
-;;   B.2 - signal declaration (inline or preceding block comment) has a
-;;         clock-domain annotation:
-;;           cdc_domain:NAME    <- preferred, most readable
-;;           clock_domain:NAME  <- accepted alias
-;;           clk_dom:NAME       <- accepted legacy alias
+;;   B.2 - signal declaration (inline or preceding block comment) has
+;;         cdc_domain:NAME
 ;;   B.3 - signal connected to a port of an instance whose entity name
 ;;         matches a regexp defined in `vhdl-cdc-clk-domain'
 ;;
@@ -32,6 +26,15 @@
 ;;   A block is a pure-comment line followed by consecutive signal/port
 ;;   declaration lines ended by a blank line.  A keyword in the leading
 ;;   comment line applies to every signal/port in the block.
+;;
+;; Inline ignore annotations:
+;;   cdc_ignore          - on a declaration (inline or block comment):
+;;                         the declared signal is treated as globally ignored,
+;;                         appearing in "Ignored CDC Signals" instead of the
+;;                         CDC violations section.
+;;   cdc_ignore:NAME     - on a statement or conditional: the signal NAME is
+;;                         excluded from tracking on that specific line only;
+;;                         it is still analyzed on all other lines.
 ;;
 ;; Usage:
 ;;   M-x vhdl-cdc-analyze   (run in a VHDL buffer)
@@ -87,15 +90,12 @@ Example:
 (defun vhdl-cdc--clock-method (name comment)
   "Return the clock-detection method string for NAME/COMMENT, or nil.
 Returns \"A.1\", \"A.2\", or \"A.3\" for the first matching rule.
-Rule A.2 matches comments containing any of:
-  cdc_clock      (preferred — no colon or argument required)
-  domain_clock:  (accepted alias)
-  dom_clk:       (accepted legacy alias)"
+Rule A.2 matches comments containing the keyword  cdc_clock  (no colon needed)."
   (cond
-   ((string-match-p "clk\\'" (downcase name))                                    "A.1")
+   ((string-match-p "clk\\'" (downcase name))            "A.1")
    ((and comment
-         (string-match-p "\\(?:cdc_clock\\|dom_clk\\|domain_clock\\)\\b" comment)) "A.2")
-   ((member name vhdl-cdc-clock)                                                 "A.3")
+         (string-match-p "\\bcdc_clock\\b" comment))     "A.2")
+   ((member name vhdl-cdc-clock)                          "A.3")
    (t nil)))
 
 (defun vhdl-cdc--ignored-p (name)
@@ -120,17 +120,22 @@ Rule A.2 matches comments containing any of:
     (nreverse ids)))
 
 (defun vhdl-cdc--extract-clk-dom (comment)
-  "Return the clock name from a domain-assignment annotation in COMMENT.
-Recognised keywords (preferred first):
-  cdc_domain:NAME    (preferred)
-  clock_domain:NAME  (accepted alias)
-  clk_dom:NAME       (accepted legacy alias)
+  "Return the clock name from a  cdc_domain:NAME  annotation in COMMENT.
 Returns nil when no annotation is present."
   (when (and comment
-             (string-match
-              "\\(?:cdc_domain\\|clk_dom\\|clock_domain\\):\\([a-zA-Z][a-zA-Z0-9_]*\\)"
-              comment))
+             (string-match "\\bcdc_domain:\\([a-zA-Z][a-zA-Z0-9_]*\\)" comment))
     (match-string 1 comment)))
+
+(defun vhdl-cdc--ignore-names-on-line (comment)
+  "Return list of signal names suppressed by  cdc_ignore:NAME  in COMMENT.
+Each \"cdc_ignore:NAME\" annotation on a statement/conditional line
+excludes NAME from tracking for that specific line only."
+  (let ((names '())
+        (pos   0))
+    (while (string-match "\\bcdc_ignore:\\([a-zA-Z][a-zA-Z0-9_]*\\)" comment pos)
+      (push (match-string 1 comment) names)
+      (setq pos (match-end 0)))
+    names))
 
 (defun vhdl-cdc--record-usage (domains sig clk method line usage)
   "Record SIG belonging to CLK domain in DOMAINS hash table.
@@ -164,12 +169,13 @@ Returns a list of plists, each with:
   :line          - line number (integer)
   :comment       - inline comment string or nil
   :block-comment - leading block-comment text applying to this decl, or nil
+  :cdc-ignore    - t when a cdc_ignore annotation is present on the declaration
 
 Block comment: a pure-comment line (or the last of consecutive comment lines)
 immediately preceding a run of declarations, reset by a blank line."
   (let ((decls         '())
-        (block-comment nil)   ; comment from the line preceding the current block
-        (in-decl-block nil))  ; t while inside a consecutive run of declarations
+        (block-comment nil)
+        (in-decl-block nil))
     (with-current-buffer buf
       (save-excursion
         (goto-char (point-min))
@@ -180,44 +186,41 @@ immediately preceding a run of declarations, reset by a blank line."
                  (comment (vhdl-cdc--inline-comment text))
                  name kind)
             (cond
-             ;; Blank line – reset block context
              ((string-match-p "^[ \t]*$" text)
               (setq block-comment nil
                     in-decl-block nil))
-             ;; Pure comment line (no declaration on it)
              ((string-match-p "^[ \t]*--" text)
-              ;; Only update block-comment while not yet inside a decl run
               (unless in-decl-block
                 (setq block-comment comment)))
              (t
-              ;; Try to match a declaration
-              ;; signal declaration:  signal NAME :
               (when (string-match
                      "^[ \t]*signal[ \t]+\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:"
                      text)
                 (setq name (match-string 1 text)
                       kind 'signal))
-              ;; port declaration:  NAME : in/out/inout/buffer TYPE
-              ;; (exclude port-map connections that contain "=>")
               (when (and (not name)
                          (not (string-match "=>" text))
                          (string-match
                           "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:[ \t]*\
 \\(?:in\\|out\\|inout\\|buffer\\)[ \t]"
                           (concat (downcase text) " ")))
-                ;; re-run without downcase to get correct casing
                 (when (string-match
                        "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)[ \t]*:" text)
                   (setq name (match-string 1 text)
                         kind 'port)))
               (if name
-                  (progn
+                  (let ((cdc-ign
+                         (or (and comment
+                                  (string-match-p "\\bcdc_ignore\\b" comment))
+                             (and block-comment
+                                  (string-match-p "\\bcdc_ignore\\b"
+                                                  block-comment)))))
                     (setq in-decl-block t)
                     (push (list :name name :kind kind :line linenum
                                 :comment comment
-                                :block-comment block-comment)
+                                :block-comment block-comment
+                                :cdc-ignore (and cdc-ign t))
                           decls))
-                ;; Non-blank, non-comment, non-declaration line
                 (setq block-comment nil
                       in-decl-block nil)))))
           (forward-line 1))))
@@ -276,18 +279,27 @@ Each plist has:
     (nreverse blocks)))
 
 (defun vhdl-cdc--assignments-in-region (buf start end)
-  "Return list of (NAME . LINE) for signal assignments in BUF from START to END."
-  (let ((result '()))
+  "Return list of (NAME . LINE) for signal assignments in BUF from START to END.
+A signal is skipped on a line whose comment contains \"cdc_ignore:NAME\"."
+  (let ((assign-re "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)\
+\\(?:[ \t]*([ \t]*[^)]*[ \t]*)\\)?[ \t]*<=")
+        (result    '()))
     (with-current-buffer buf
       (save-excursion
         (goto-char start)
-        (while (and (< (point) end)
-                    (re-search-forward
-                     "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)\
-\\(?:[ \t]*([ \t]*[^)]*[ \t]*)\\)?[ \t]*<="
-                     end t))
-          (push (cons (match-string-no-properties 1) (line-number-at-pos))
-                result))))
+        (while (< (point) end)
+          (let* ((text    (buffer-substring-no-properties
+                           (line-beginning-position) (line-end-position)))
+                 (comment (vhdl-cdc--inline-comment text))
+                 (ignore  (if comment
+                              (vhdl-cdc--ignore-names-on-line comment)
+                            '()))
+                 (linenum (line-number-at-pos)))
+            (when (string-match assign-re text)
+              (let ((name (match-string 1 text)))
+                (unless (member name ignore)
+                  (push (cons name linenum) result)))))
+          (forward-line 1))))
     (nreverse result)))
 
 (defun vhdl-cdc--references-in-region (buf start end decl-names exclude-names)
@@ -296,6 +308,8 @@ Only names present in DECL-NAMES (and absent from EXCLUDE-NAMES) are returned.
 Names that appear as the LHS of a signal assignment on the same line are not
 counted as references from that line (they are handled by
 `vhdl-cdc--assignments-in-region').
+A name listed in a  cdc_ignore:NAME  annotation on the same line is also
+excluded for that line only.
 Results are deduplicated by (name . line)."
   (let ((assign-re "^[ \t]*\\([a-zA-Z][a-zA-Z0-9_]*\\)\
 \\(?:[ \t]*([ \t]*[^)]*[ \t]*)\\)?[ \t]*<=")
@@ -308,7 +322,11 @@ Results are deduplicated by (name . line)."
           (let* ((text    (buffer-substring-no-properties
                            (line-beginning-position) (line-end-position)))
                  (linenum (line-number-at-pos))
-                 ;; Strip inline comment
+                 ;; Strip inline comment; also extract per-line ignore list
+                 (comment (vhdl-cdc--inline-comment text))
+                 (ignore  (if comment
+                              (vhdl-cdc--ignore-names-on-line comment)
+                            '()))
                  (code    (if (string-match "--" text)
                               (substring text 0 (match-beginning 0))
                             text))
@@ -323,7 +341,8 @@ Results are deduplicated by (name . line)."
             (while (string-match id-re scan pos)
               (let ((id (match-string 1 scan)))
                 (when (and (member id decl-names)
-                           (not (member id exclude-names)))
+                           (not (member id exclude-names))
+                           (not (member id ignore)))
                   (push (cons id linenum) result)))
               (setq pos (match-end 0))))
           (forward-line 1))))
@@ -372,7 +391,7 @@ Each entry has the form (CLK \"B.1\" LINE USAGE) where USAGE is
 (defun vhdl-cdc--domains-from-comments (decls clock-names)
   "Rule B.2: return domain alist from declaration comments.
 Checks both the inline comment and the preceding block comment for
-\"clk_dom:CLOCK\" or \"clock_domain:CLOCK\" annotations.
+\"cdc_domain:CLOCK\" annotations.
 DECLS is from `vhdl-cdc--scan-declarations'.
 CLOCK-NAMES is the list of known clock name strings."
   (let ((domains (make-hash-table :test 'equal)))
@@ -609,33 +628,30 @@ DECLS is the full list of signal/port declaration plists."
 
 Identifies domain clocks using:
   A.1 - signal/port name ends with \\\"clk\\\"
-  A.2 - inline comment (or preceding block comment) contains one of:
-          cdc_clock      (preferred)
-          domain_clock:  (alias)
-          dom_clk:       (legacy alias)
+  A.2 - inline comment (or preceding block comment) contains  cdc_clock
   A.3 - name is in variable `vhdl-cdc-clock'
 
 Assigns signals to clock domains using:
   B.1 - signal assigned or referenced in a process whose sensitivity list
-        has a domain clock.  Each entry is tagged \"assigned\" or
-        \"referenced\".  Any signal that appears in 2+ clock domains
-        (regardless of USAGE) is a CDC signal: it is being captured or
-        driven by flip-flops in two different clock domains.
-  B.2 - declaration comment (inline or preceding block comment) has one of:
-          cdc_domain:CLOCKNAME    (preferred)
-          clock_domain:CLOCKNAME  (alias)
-          clk_dom:CLOCKNAME       (legacy alias)
+        has a domain clock.  Each entry is tagged \\\"assigned\\\" or
+        \\\"referenced\\\".  Any signal that appears in 2+ clock domains
+        (regardless of USAGE) is a CDC signal.
+  B.2 - declaration comment (inline or preceding block comment) has
+        cdc_domain:CLOCKNAME
   B.3 - signal connected to a port whose entity name matches a regexp
         specified in `vhdl-cdc-clk-domain'
 
+Ignore annotations:
+  cdc_ignore         - in a declaration comment: signal is placed in the
+                       \\\"Ignored CDC Signals\\\" section instead of the
+                       CDC violations section (like `vhdl-cdc-ignore').
+  cdc_ignore:NAME    - in an inline comment on a statement/conditional:
+                       NAME is excluded from tracking on that line only.
+
 Block comment annotation: a keyword in the leading comment line of a
-declaration block (comment line(s) then declarations then blank line)
-applies the keyword to every signal/port in that block.
+declaration block applies to every signal/port in that block.
 
 Output is displayed in the *VHDL CDC Analysis* buffer.
-The domain group listings show an \"assigned\" or \"referenced\" column.
-Signals in `vhdl-cdc-ignore' that cross domains are listed in a
-separate \\\"Ignored CDC Signals\\\" section before the CDC violations.
 
 Configuration:
   `vhdl-cdc-clock'      - extra clock signal names (rule A.3)
@@ -656,9 +672,17 @@ Configuration:
          (dom-b3      (vhdl-cdc--domains-from-instances src-buf clock-names))
          ;; Merge all domain tables
          (domains     (vhdl-cdc--merge-domains dom-b1 dom-b2 dom-b3))
-         ;; Format and display
-         (output      (vhdl-cdc--format-output source-name clocks domains decls))
-         (out-buf     (get-buffer-create "*VHDL CDC Analysis*")))
+         ;; Augment vhdl-cdc-ignore with signals annotated via cdc_ignore
+         (decl-ignores
+          (cl-loop for d in decls
+                   when (plist-get d :cdc-ignore)
+                   collect (list :name (plist-get d :name)
+                                 :rationale "cdc_ignore annotation")))
+         (out-buf     (get-buffer-create "*VHDL CDC Analysis*"))
+         output)
+    ;; Bind the combined ignore list for the duration of output formatting
+    (let ((vhdl-cdc-ignore (append vhdl-cdc-ignore decl-ignores)))
+      (setq output (vhdl-cdc--format-output source-name clocks domains decls)))
     (with-current-buffer out-buf
       (setq buffer-read-only nil)
       (erase-buffer)

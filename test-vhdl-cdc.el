@@ -66,12 +66,12 @@
                                    (string-equal (plist-get c :method) "A.1")))
                   clocks))
 
-  (check "A.2: ref_clock detected via dom_clk: legacy keyword"
+  (check "A.2: ref_clock detected via cdc_clock keyword"
          (cl-some (lambda (c) (and (string-equal (plist-get c :name) "ref_clock")
                                    (string-equal (plist-get c :method) "A.2")))
                   clocks))
 
-  (check "A.2: aux_clock detected via cdc_clock preferred keyword"
+  (check "A.2: aux_clock detected via cdc_clock keyword"
          (cl-some (lambda (c) (and (string-equal (plist-get c :name) "aux_clock")
                                    (string-equal (plist-get c :method) "A.2")))
                   clocks))
@@ -143,21 +143,8 @@
   ;; --- B.2 comment-based domain assignment ---
   (message "\n-- B.2 comment-based domain assignment --")
 
-  (check "B.2: annotated_sig via inline clk_dom: legacy keyword"
+  (check "B.2: annotated_sig via inline cdc_domain: keyword"
          (let ((entries (gethash "annotated_sig" dom-b2)))
-           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 1 e) "B.2")
-                                     (string-equal (nth 3 e) "assigned")))
-                    entries)))
-
-  (check "B.2: annotated_sig2 via inline clock_domain: alias"
-         (let ((entries (gethash "annotated_sig2" dom-b2)))
-           (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
-                                     (string-equal (nth 3 e) "assigned")))
-                    entries)))
-
-  (check "B.2: annotated_sig3 via inline cdc_domain: preferred keyword"
-         (let ((entries (gethash "annotated_sig3" dom-b2)))
            (cl-some (lambda (e) (and (string-equal (car e) "sys_clk")
                                      (string-equal (nth 1 e) "B.2")
                                      (string-equal (nth 3 e) "assigned")))
@@ -193,6 +180,33 @@
                 (entries (gethash "synced_input" d3-re)))
            (cl-some (lambda (e) (string-equal (car e) "sys_clk")) entries)))
 
+  ;; --- cdc_ignore: declaration-level and statement-level ---
+  (message "\n-- cdc_ignore annotation --")
+
+  (check "cdc_ignore decl: decl_ignored_sig has :cdc-ignore t in declarations"
+         (let ((d (cl-find "decl_ignored_sig" decls
+                           :key (lambda (d) (plist-get d :name))
+                           :test #'string-equal)))
+           (and d (plist-get d :cdc-ignore))))
+
+  (check "cdc_ignore decl: line_ignored_sig does NOT have :cdc-ignore t"
+         (let ((d (cl-find "line_ignored_sig" decls
+                           :key (lambda (d) (plist-get d :name))
+                           :test #'string-equal)))
+           (and d (not (plist-get d :cdc-ignore)))))
+
+  (check "cdc_ignore stmt: line_ignored_sig is NOT in fast_clk domain (ref suppressed)"
+         (let ((entries (gethash "line_ignored_sig" dom-b1)))
+           (not (cl-some (lambda (e) (string-equal (car e) "fast_clk")) entries))))
+
+  (check "cdc_ignore stmt: line_ignored_sig IS in sys_clk domain (assignment tracked)"
+         (let ((entries (gethash "line_ignored_sig" dom-b1)))
+           (cl-some (lambda (e) (string-equal (car e) "sys_clk")) entries)))
+
+  (check "cdc_ignore stmt: decl_ignored_sig IS in fast_clk domain (ref NOT suppressed)"
+         (let ((entries (gethash "decl_ignored_sig" dom-b1)))
+           (cl-some (lambda (e) (string-equal (car e) "fast_clk")) entries)))
+
   ;; --- CDC violation detection ---
   (message "\n-- CDC violation detection --")
 
@@ -221,14 +235,21 @@
   (check "CDC: crossing_data is NOT in vhdl-cdc-ignore"
          (not (vhdl-cdc--ignored-p "crossing_data")))
 
-  ;; --- Full output test ---
+  ;; --- Full output test (uses combined vhdl-cdc-ignore + decl-ignores) ---
   (message "\n-- Full output generation --")
-  (let ((output (vhdl-cdc--format-output "cdc_test.vhd" clocks domains decls)))
+  ;; Simulate what vhdl-cdc-analyze does: augment vhdl-cdc-ignore with decl annotations
+  (let* ((decl-ignores
+          (cl-loop for d in decls
+                   when (plist-get d :cdc-ignore)
+                   collect (list :name (plist-get d :name)
+                                 :rationale "cdc_ignore annotation")))
+         (vhdl-cdc-ignore (append vhdl-cdc-ignore decl-ignores))
+         (output (vhdl-cdc--format-output "cdc_test.vhd" clocks domains decls)))
     (check "Output contains 'Domain Clocks' section"
            (string-match-p "Domain Clocks" output))
     (check "Output contains sys_clk clock"
            (string-match-p "sys_clk" output))
-    (check "Output contains aux_clock clock (cdc_clock preferred keyword)"
+    (check "Output contains aux_clock clock (cdc_clock keyword)"
            (string-match-p "aux_clock" output))
     (check "Output contains *** for crossing_data"
            (string-match-p "\\*\\*\\*.*crossing_data" output))
@@ -242,7 +263,13 @@
            (string-match-p "referenced" output))
     (check "Output contains 'Ignored CDC Signals' section"
            (string-match-p "Ignored CDC Signals" output))
-    (check "Ignored section contains gray_count"
+    (check "Ignored section contains decl_ignored_sig (cdc_ignore on declaration)"
+           (string-match-p "decl_ignored_sig" output))
+    (check "decl_ignored_sig NOT preceded by *** (declaration-ignored)"
+           (not (string-match-p "\\*\\*\\*.*decl_ignored_sig" output)))
+    (check "line_ignored_sig NOT in CDC section (per-line suppression prevents fast_clk entry)"
+           (not (string-match-p "\\*\\*\\*.*line_ignored_sig" output)))
+    (check "Output contains gray_count" ; still ignored via vhdl-cdc-ignore variable
            (string-match-p "gray_count" output))
     (check "Ignored section precedes CDC section"
            (< (string-match "Ignored CDC Signals" output)

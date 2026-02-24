@@ -2,15 +2,14 @@
 -- Test design exercising all CDC clock-domain detection rules.
 --
 -- A.1  sys_clk, fast_clk      (name ends with "clk")
--- A.2  ref_clock              (comment contains legacy keyword "dom_clk:")
--- A.2  aux_clock              (comment contains preferred keyword "cdc_clock")
+-- A.2  ref_clock, aux_clock   (comment contains "cdc_clock")
 -- A.3  extra_clk              (in vhdl-cdc-clock user variable)
 -- B.1  process sensitivity list
--- B.2  annotated_sig  via legacy inline comment "clk_dom:CLK"
--- B.2  annotated_sig2 via alias inline comment "clock_domain:CLK"
--- B.2  annotated_sig3 via preferred inline comment "cdc_domain:CLK"
+-- B.2  annotated_sig via inline comment "cdc_domain:CLK"
 -- B.2  block comment annotation applies to all signals in the block
 -- B.3  instance port connection rule
+-- cdc_ignore (decl)  decl_ignored_sig: CDC but declaration-ignored
+-- cdc_ignore:NAME    line_ignored_sig: per-statement ignore suppresses fast_clk ref
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -20,8 +19,8 @@ entity cdc_test is
   port (
     sys_clk   : in  std_logic;              -- A.1: name ends with "clk"
     fast_clk  : in  std_logic;              -- A.1: name ends with "clk"
-    ref_clock : in  std_logic;              -- A.2: dom_clk: (legacy keyword — still accepted)
-    aux_clock : in  std_logic;              -- A.2: cdc_clock (preferred keyword, no colon needed)
+    ref_clock : in  std_logic;              -- A.2: cdc_clock
+    aux_clock : in  std_logic;              -- A.2: cdc_clock (another domain clock)
     rst_n     : in  std_logic;
     data_in   : in  std_logic_vector(7 downto 0);
     data_out  : out std_logic_vector(7 downto 0);
@@ -45,12 +44,9 @@ architecture rtl of cdc_test is
   signal fast_data    : std_logic_vector(7 downto 0);
 
   -- -----------------------------------------------------------------------
-  -- Signals with explicit inline domain annotation (B.2)
-  -- Three forms accepted; cdc_domain: is the preferred one.
+  -- Signal with explicit inline domain annotation (B.2)
   -- -----------------------------------------------------------------------
-  signal annotated_sig  : std_logic;       -- clk_dom:sys_clk          (legacy)
-  signal annotated_sig2 : std_logic;       -- clock_domain:sys_clk     (alias)
-  signal annotated_sig3 : std_logic;       -- cdc_domain:sys_clk       (preferred)
+  signal annotated_sig : std_logic;        -- cdc_domain:sys_clk
 
   -- -----------------------------------------------------------------------
   -- Block annotation: cdc_domain:sys_clk in block comment applies to all
@@ -91,6 +87,19 @@ architecture rtl of cdc_test is
   -- -----------------------------------------------------------------------
   signal synced_input : std_logic;
 
+  -- -----------------------------------------------------------------------
+  -- Signal with cdc_ignore on its declaration: it is CDC (assigned sys_clk,
+  -- referenced fast_clk) but the annotation places it in Ignored CDC Signals.
+  -- -----------------------------------------------------------------------
+  signal decl_ignored_sig : std_logic;    -- cdc_ignore
+
+  -- -----------------------------------------------------------------------
+  -- Signal whose only reference in fast_clk is per-line suppressed via
+  -- cdc_ignore:line_ignored_sig.  Therefore it appears only in sys_clk and
+  -- is NOT a CDC signal.
+  -- -----------------------------------------------------------------------
+  signal line_ignored_sig : std_logic;
+
 begin
 
   -- -----------------------------------------------------------------------
@@ -111,6 +120,8 @@ begin
       sys_valid   <= '1';
       crossing_data   <= stage1_data;   -- assigned in sys_clk process
       shared_ref_data <= sys_valid;     -- assigned in sys_clk; referenced in fast_clk
+      decl_ignored_sig <= sys_valid;    -- assigned in sys_clk (see fast_clk for CDC)
+      line_ignored_sig <= sys_valid;    -- assigned in sys_clk only (fast_clk ref ignored)
       if ref_only_sig = '1' then        -- ref_only_sig referenced in sys_clk
         counter <= counter + 2;
       end if;
@@ -138,6 +149,12 @@ begin
       end if;
       if ref_only_sig = '0' then      -- ref_only_sig referenced in fast_clk -> CDC!
         fast_data(0) <= '1';
+      end if;
+      if decl_ignored_sig = '1' then  -- referenced in fast_clk -> CDC (but decl-ignored)
+        fast_data(1) <= '1';
+      end if;
+      if line_ignored_sig = '1' then  -- cdc_ignore:line_ignored_sig (suppressed here)
+        fast_data(2) <= '1';
       end if;
     end if;
   end process p_fast;
