@@ -6,9 +6,9 @@
 ;;   -- Definition section (before the first blank line) --
 ;;
 ;;   ID := box("label")
-;;       Single-border box.
+;;       Single-border box.  Use \n in label for multi-line text.
 ;;
-;;   ID := double-box("label", ID1, ID2, ...)
+;;   ID := double-box("label", [ID1, ID2, ...])
 ;;       Double-border container.  ID1..IDn are the node IDs rendered INSIDE
 ;;       the border.  All other nodes (text nodes) appear OUTSIDE.
 ;;
@@ -25,18 +25,20 @@
 ;;
 ;;     ID1 -> ID2 ; ID3 -> ID4
 ;;
-;;   Unicode right-arrow (\u2192) may be used instead of ->.
+;;   Bracket fan-out: a final [A, B] target splits one source into many:
+;;
+;;     ID1 -> ID2 -> [ID3, ID4]
+;;
+;;   Unicode right-arrow (U+2192) may be used instead of ->.
 ;;
 ;;   The very first non-blank line of the connection section may be a bare
 ;;   identifier naming a double-box container.  The graph-based renderer is
-;;   then used: each box appears exactly once, made taller when it has
-;;   multiple input or output connections; text nodes appear outside the
+;;   then used: each box appears exactly once; text nodes appear outside the
 ;;   module border.
 ;;
-;;     F
-;;     I1 -> A -> B -> C -> O1
-;;     I2 -> D -> B
-;;     C  -> E -> O2
+;;   The double-box ID may also appear in chains for module-level connections:
+;;
+;;     I3 -> F -> O3       (arrow enters/exits the module border)
 ;;
 ;; Usage:
 ;;   M-x box-diagram-render        - render the current buffer
@@ -69,7 +71,9 @@ Plist keys: :type (box|double-box|text), :label, :children (double-box)."
         (let* ((id    (match-string 1 line))
                (label (match-string 2 line))
                (rest  (match-string 3 line))
-               (kids  (when (string-match ",\\(.*\\)" rest)
+               ;; Children enclosed in [ ]: double-box("Label", [A, B, C])
+               (kids  (when (string-match
+                             ",[ \t]*\\[[ \t]*\\([^]]*\\)[ \t]*\\]" rest)
                         (delq nil
                               (mapcar (lambda (s)
                                         (let ((s (string-trim s)))
@@ -79,24 +83,49 @@ Plist keys: :type (box|double-box|text), :label, :children (double-box)."
     (nreverse defs)))
 
 (defun box-diagram--parse-chains (text)
-  "Return list of chains from TEXT.  Each chain is a list of ID strings.
-Lines with -> (or Unicode \u2192) form chains.  Semicolons split multiple
-chains on one line."
-  (let (chains)
+  "Return (CHAINS . BRANCH-GROUPS) from TEXT.
+CHAINS is a list of chains (lists of ID strings).  A final [A, B, C] segment
+is expanded into one chain per target.
+BRANCH-GROUPS is an alist (SOURCE-ID . (TARGET-ID ...)) recording each
+bracket fan-out group so the renderer can draw branch connectors."
+  (let (chains branch-groups)
     (dolist (line (split-string text "\n"))
       (let ((trimmed (string-trim line)))
         (when (and (> (length trimmed) 0)
                    (string-match-p "->\\|\u2192" trimmed)
                    (not (string-match-p ":=" trimmed)))
           (dolist (seg (split-string trimmed ";"))
-            (let* ((seg   (string-trim seg))
-                   (nodes (and (string-match-p "->\\|\u2192" seg)
-                               (mapcar #'string-trim
-                                       (split-string seg
-                                                     "[ \t]*\\(->\\|\u2192\\)[ \t]*" t)))))
-              (when (and nodes (cdr nodes))
-                (push nodes chains)))))))
-    (nreverse chains)))
+            (let ((seg (string-trim seg)))
+              (when (string-match-p "->\\|\u2192" seg)
+                (let* ((parts (mapcar #'string-trim
+                                      (split-string seg
+                                                    "[ \t]*\\(->\\|\u2192\\)[ \t]*" t))))
+                  (when (cdr parts)
+                    (let* ((last-part (car (last parts)))
+                           (prefix    (butlast parts)))
+                      (if (string-match
+                           "^\\[[ \t]*\\([^]]+\\)[ \t]*\\]$" last-part)
+                          ;; Bracket group: fan out from last prefix node
+                          (let* ((inner   (match-string 1 last-part))
+                                 (targets (mapcar #'string-trim
+                                                  (split-string inner ",")))
+                                 (source  (car (last prefix))))
+                            ;; Record branch group for visual rendering
+                            (when source
+                              (let ((existing (assoc source branch-groups)))
+                                (if existing
+                                    (setcdr existing
+                                            (cl-union (cdr existing) targets
+                                                      :test #'equal))
+                                  (push (cons source targets) branch-groups))))
+                            ;; Expand: one chain per target
+                            (dolist (tgt targets)
+                              (let ((chain (append prefix (list tgt))))
+                                (when (cdr chain)
+                                  (push chain chains)))))
+                        ;; Normal chain
+                        (push parts chains)))))))))))
+    (cons (nreverse chains) branch-groups)))
 
 ;;; ---- Graph-based layout (used when a double-box container is declared) ----
 
@@ -211,18 +240,13 @@ Port-row for edge (f->t) = max(row[f], row[t])."
 
 ;;; ---- Graph renderer --------------------------------------------------------
 
-(defun box-diagram--render-graph (chains defs outer-def)
-  "Render diagram from CHAINS/DEFS using graph-based layout.
+(defun box-diagram--render-graph (chains defs outer-def mod-ins mod-outs branch-groups)
+  "Render diagram using graph-based layout.
+CHAINS/DEFS describe the inner topology.
 OUTER-DEF is the double-box plist (:label :children).
-Returns a list of strings.
-
-Border style  : ===Title=== top, | sides, === bottom.
-Arrow crossing: label -------|--> box    (dashes approach |, --> enters)
-Exit crossing : box +--------|-->  label  (dashes to |, --> exits)
-VL scheme     : 3 visual lines per grid row:
-                  ivl-top(r)     = 3r     top border
-                  ivl-content(r) = 3r+1   connection/label row
-                  ivl-bot(r)     = 3r+2   bottom border"
+MOD-INS / MOD-OUTS are lists of IDs for module-level border connections.
+BRANCH-GROUPS is alist (SOURCE . (TARGET ...)) for bracket fan-out groups.
+Returns a list of strings."
   (let* ((inner-ids (plist-get outer-def :children))
          (title     (plist-get outer-def :label))
          (inner-set (let ((h (make-hash-table :test 'equal)))
@@ -232,7 +256,7 @@ VL scheme     : 3 visual lines per grid row:
          (ports (box-diagram--collect-ports chains rows inner-set))
          (in-ports  (car ports))
          (out-ports (cdr ports))
-         ;; Inner nodes in first-appearance order
+         ;; Inner nodes in first-appearance order across chains
          (inner-order
           (let (lst)
             (dolist (chain chains)
@@ -257,9 +281,11 @@ VL scheme     : 3 visual lines per grid row:
             (max 1 (hash-table-count seen))))
          ;; Outside-left/right maps: port-row -> outside-node-id
          (oleft  (make-hash-table :test 'eql))
-         (oright (make-hash-table :test 'eql)))
+         (oright (make-hash-table :test 'eql))
+         ;; Module-level port count: one canvas row per (mod-in or mod-out)
+         (n-mod-ports (max (length mod-ins) (length mod-outs))))
 
-    ;; Populate oleft / oright
+    ;; Populate oleft / oright from inner chains
     (dolist (chain chains)
       (let ((rest chain))
         (while (cdr rest)
@@ -272,20 +298,20 @@ VL scheme     : 3 visual lines per grid row:
           (setq rest (cdr rest)))))
 
     ;; ---- Geometry -----------------------------------------------------------
-    ;; Outside-left pattern: "S0_AXI -------|-->" + "| box"
-    ;;   label + " -------" (8 chars, no arrowhead before |)
-    ;;   | wall stays; --> is drawn inside the module after |
-
-    (let* ((dashes-out (concat " " (make-string 7 ?\u2500)))  ; " " + 7 x BOX LIGHT HORIZ
+    (let* ((dashes-out (concat " " (make-string 7 ?\u2500)))
+           ;; max-llbl: widest label among outside-left entries AND module inputs
            (left-lbls
             (let (ls) (maphash (lambda (_ id)
                                  (push (box-diagram--label id defs) ls))
                                oleft) ls))
-           (max-llbl (if left-lbls (apply #'max (mapcar #'length left-lbls)) 0))
+           (max-llbl
+            (apply #'max
+                   (cons 0 (mapcar #'length
+                                   (append left-lbls
+                                           (mapcar (lambda (id)
+                                                     (box-diagram--label id defs))
+                                                   mod-ins))))))
            (left-w   (+ max-llbl (length dashes-out)))
-           ;; entry-w=3: arrow "-->" between | and first column
-           ;; gap=3:     arrow "-->" between adjacent columns
-           ;; exit-pad=5: spare space after last column before right |
            (gap      3)
            (entry-w  3)
            (exit-pad 5)
@@ -301,59 +327,81 @@ VL scheme     : 3 visual lines per grid row:
                     (* gap (max 0 (1- num-cols)))
                     exit-pad)
                  (length title)))
-           ;; Dynamic VL scheme: each grid row r gets row-heights[r] content lines
-           ;; ivl-base[r]    = sum_{r'<r}(row-heights[r']+2)
-           ;; ivl-top(r)     = ivl-base[r]
-           ;; ivl-cont(r,l)  = ivl-base[r] + 1 + l   (l=0..row-heights[r]-1)
-           ;; ivl-bot(r)     = ivl-base[r] + row-heights[r] + 1
-           ;; n-in-vls       = sum_{r}(row-heights[r]+2)
+           ;; Dynamic VL scheme: n-mod-ports module rows at the top,
+           ;; then for each grid row r: top + row-heights[r] content + bottom
            (row-heights
             (let ((v (make-vector num-rows 1)))
               (dolist (id inner-order)
-                (let* ((r   (gethash id rows 0))
-                       (h   (length (box-diagram--label-lines
-                                     (box-diagram--label id defs)))))
+                (let* ((r (gethash id rows 0))
+                       (h (length (box-diagram--label-lines
+                                   (box-diagram--label id defs)))))
                   (when (> h (aref v r)) (aset v r h))))
               v))
+           ;; ivl-base[r]: first inside-VL for grid row r
+           ;; (offset by n-mod-ports so module port rows come first)
            (ivl-base
-            (let ((v (make-vector num-rows 0)) (acc 0))
+            (let ((v (make-vector num-rows 0)) (acc n-mod-ports))
               (dotimes (r num-rows)
                 (aset v r acc)
                 (setq acc (+ acc (aref row-heights r) 2)))
               v))
            (n-in-vls
-            (let ((acc 0))
-              (dotimes (r num-rows) (setq acc (+ acc (aref row-heights r) 2)))
-              acc))
+            (+ n-mod-ports
+               (let ((acc 0))
+                 (dotimes (r num-rows) (setq acc (+ acc (aref row-heights r) 2)))
+                 acc)))
            (n-vls    (+ n-in-vls 2))
            (canvas-w (+ left-w 1 inside-w 1 40))
            (cv       (box-diagram--canvas n-vls canvas-w))
            (mod-lx   left-w)
            (mod-rx   (+ mod-lx 1 inside-w))
-           ;; Arrow string used between boxes and at entries
-           (arrow    (concat (make-string 2 ?─) "►")))
+           (arrow    (concat (make-string 2 ?\u2500) "\u25ba")))
 
       (cl-flet
-          ((abs-vl    (ivl) (+ 1 ivl))       ; canvas row = 1 + inside-VL
+          ((abs-vl    (ivl) (+ 1 ivl))
            (ivl-top-r (r)   (aref ivl-base r))
-           (ivl-cont  (r l) (+ (aref ivl-base r) 1 l))   ; l = line index within row
+           (ivl-cont  (r l) (+ (aref ivl-base r) 1 l))
            (ivl-bot-r (r)   (+ (aref ivl-base r) (aref row-heights r) 1))
            (cx-of     (c)   (+ mod-lx 1 (aref col-x c))))
 
-        ;; Top border with embedded title: ╔══ Title ══╗
-        ;; Side walls ║, bottom border ╚═╝.  No separate title row or separator.
+        ;; Top border: ╔══ Title ══╗
         (let* ((tpad   (/ (- inside-w (length title) 2) 2))
                (tpad-r (- inside-w (length title) 2 tpad)))
           (box-diagram--put cv 0 mod-lx
-            (concat "╔" (make-string tpad ?═) " " title " "
-                    (make-string tpad-r ?═) "╗")))
+            (concat "\u2554" (make-string tpad ?\u2550) " " title " "
+                    (make-string tpad-r ?\u2550) "\u2557")))
+        ;; Bottom border: ╚═══╝
         (box-diagram--put cv (1- n-vls) mod-lx
-          (concat "╚" (make-string inside-w ?═) "╝"))
+          (concat "\u255a" (make-string inside-w ?\u2550) "\u255d"))
 
-        ;; ║ side walls on every inside visual line (abs rows 3 .. n-vls-2)
+        ;; ║ side walls on every inside row
         (dotimes (ivl n-in-vls)
-          (box-diagram--put cv (abs-vl ivl) mod-lx "║")
-          (box-diagram--put cv (abs-vl ivl) mod-rx "║"))
+          (box-diagram--put cv (abs-vl ivl) mod-lx "\u2551")
+          (box-diagram--put cv (abs-vl ivl) mod-rx "\u2551"))
+
+        ;; ---- Module-level port rows (above inner grid rows) ------------------
+        ;; Pattern (mod-in): "label ────────║──►" entering left wall
+        ;; Pattern (mod-out): "─────────────║──► label" exiting right wall
+        (dotimes (i n-mod-ports)
+          (let ((av (abs-vl i)))
+            ;; Left: module input
+            (when (< i (length mod-ins))
+              (let* ((lbl (box-diagram--label (nth i mod-ins) defs))
+                     (pad (make-string (- max-llbl (length lbl)) ?\s)))
+                (box-diagram--put cv av 0 (concat pad lbl dashes-out))
+                (box-diagram--put cv av (+ mod-lx 1) arrow)))
+            ;; Right: module output
+            (when (< i (length mod-outs))
+              (let* ((lbl       (box-diagram--label (nth i mod-outs) defs))
+                     (has-input (< i (length mod-ins)))
+                     ;; Start fill after the --> if there is also a mod-in
+                     (fill-x   (+ mod-lx (if has-input 4 1)))
+                     (fill-n   (- mod-rx fill-x)))
+                (when (> fill-n 0)
+                  (box-diagram--put cv av fill-x
+                    (make-string fill-n ?\u2500)))
+                (box-diagram--put cv av (+ mod-rx 1)
+                  (concat arrow " " lbl))))))
 
         ;; ---- Draw each inner box -------------------------------------------
         (dolist (id inner-order)
@@ -378,8 +426,7 @@ VL scheme     : 3 visual lines per grid row:
             (box-diagram--put cv (abs-vl (ivl-top-r pr-min)) cx
               (concat tl (make-string (- bw 2) (string-to-char hl)) tr))
 
-            ;; Content rows: draw all label lines for the primary port-row,
-            ;; walls for non-primary port-rows.
+            ;; Content rows
             (let* ((lbls   (box-diagram--label-lines lbl))
                    (n-lbls (length lbls)))
               (dolist (pr prows)
@@ -424,8 +471,7 @@ VL scheme     : 3 visual lines per grid row:
             (box-diagram--put cv (abs-vl (ivl-bot-r pr-max)) cx
               (concat bl (make-string (- bw 2) (string-to-char hl)) "\u2518"))
 
-            ;; Walls for tall (multi-port) boxes: fill all VLs between last
-            ;; content line of one port-row and first content line of the next.
+            ;; Side walls between consecutive port-rows
             (when (> pr-max pr-min)
               (let ((pr pr-min))
                 (while (< pr pr-max)
@@ -437,18 +483,64 @@ VL scheme     : 3 visual lines per grid row:
                         (box-diagram--put cv (abs-vl ivl) (+ cx bw -1) vl)
                         (setq ivl (1+ ivl)))))
                   (setq pr (1+ pr)))))))
-        ;; ---- Draw outside-left entries -------------------------------------
-        ;; Pattern: "S0_AXI -------|-->" + (| already drawn) + inside "-->| box"
+
+        ;; ---- Draw outside-left entries (text -> inner box) ------------------
         (maphash
          (lambda (pr from-id)
            (let* ((lbl (box-diagram--label from-id defs))
                   (pad (make-string (- max-llbl (length lbl)) ?\s))
                   (av  (abs-vl (ivl-cont pr 0))))
-             ;; Dashes approach the | from the left (last char is dash, not arrowhead)
              (box-diagram--put cv av 0 (concat pad lbl dashes-out))
-             ;; --> enters the module on the right side of |
              (box-diagram--put cv av (+ mod-lx 1) arrow)))
          oleft)
+
+        ;; ---- Draw branch connectors (from bracket fan-out groups) -----------
+        ;; For source S with branch targets [T1, T2, ...] at port-rows [pr0, pr1, ...]:
+        ;; - Draw ┬ at S's output column on the first branch port-row
+        ;; - Draw ├ on middle port-rows, └ on the last port-row
+        ;; - Draw │ in the gap rows between consecutive branch port-rows
+        (dolist (bg branch-groups)
+          (let* ((source  (car bg))
+                 (targets (cdr bg)))
+            (when (gethash source inner-set)
+              (let* ((c        (gethash source cols 0))
+                     (cx       (cx-of c))
+                     (bw       (aref col-widths c))
+                     (bx       (+ cx bw))   ; column of the branch indicator
+                     (s-oports (gethash source out-ports '()))
+                     ;; port-rows for each branch target, sorted ascending
+                     (branch-prs
+                      (sort
+                       (delq nil
+                             (mapcar (lambda (tgt)
+                                       (let ((p (assoc tgt s-oports)))
+                                         (when p (cdr p))))
+                                     targets))
+                       #'<)))
+                (when (>= (length branch-prs) 2)
+                  (let ((n (length branch-prs)))
+                    ;; Overwrite first char of arrow at each branch port-row
+                    (dotimes (i n)
+                      (let* ((pr (nth i branch-prs))
+                             (av (abs-vl (ivl-cont pr 0)))
+                             ;; ┬ = T-down, ├ = T-right for middle, └ = corner
+                             (ch (cond ((= i 0)      "\u252c")
+                                       ((= i (1- n)) "\u2514")
+                                       (t            "\u251c"))))
+                        (box-diagram--put cv av bx ch)))
+                    ;; Vertical │ in canvas rows between consecutive port-rows
+                    (let ((i 0))
+                      (while (< i (1- n))
+                        (let* ((pr0 (nth i       branch-prs))
+                               (pr1 (nth (1+ i) branch-prs))
+                               (ivl-start (1+ (ivl-cont pr0
+                                                        (1- (aref row-heights pr0)))))
+                               (ivl-end   (ivl-cont pr1 0)))
+                          (let ((ivl ivl-start))
+                            (while (< ivl ivl-end)
+                              (box-diagram--put cv (abs-vl ivl) bx "\u2502")
+                              (setq ivl (1+ ivl)))))
+                        (setq i (1+ i))))))))))
 
         (box-diagram--canvas-to-lines cv)))))
 
@@ -512,7 +604,8 @@ VL scheme     : 3 visual lines per grid row:
     (let* ((def-text  (mapconcat #'identity (nreverse def-lines)  "\n"))
            (conn-text (mapconcat #'identity (nreverse conn-lines) "\n"))
            (defs      (box-diagram--parse-defs def-text))
-           (outer-box nil))
+           (outer-box nil)
+           (outer-id  nil))
       ;; Detect optional bare double-box ID on first non-blank connection line
       (let ((first-nl nil))
         (dolist (l (split-string conn-text "\n"))
@@ -524,18 +617,39 @@ VL scheme     : 3 visual lines per grid row:
                  (def (cdr (assoc id defs))))
             (when (and def (eq (plist-get def :type) 'double-box))
               (setq outer-box def)
+              (setq outer-id  id)
+              ;; Remove the bare-ID line from conn-text
               (let ((removed nil) (new '()))
                 (dolist (l (split-string conn-text "\n"))
                   (if (and (not removed) (string= (string-trim l) id))
                       (setq removed t)
                     (push l new)))
                 (setq conn-text (mapconcat #'identity (nreverse new) "\n")))))))
-      (let ((chains (box-diagram--parse-chains conn-text)))
+      ;; Parse chains (may contain outer-id for module-level connections)
+      (let* ((parsed       (box-diagram--parse-chains conn-text))
+             (all-chains   (car parsed))
+             (branch-groups (cdr parsed)))
         (if outer-box
-            (box-diagram--render-graph chains defs outer-box)
-          ;; Simple chain-by-chain fallback
+            ;; Split chains: those touching outer-id go to mod-ins/mod-outs;
+            ;; the rest are inner chains for graph layout.
+            (let (inner-chains mod-ins mod-outs)
+              (dolist (chain all-chains)
+                (let ((fidx (cl-position outer-id chain :test #'equal)))
+                  (if fidx
+                      ;; Chain touches the module box
+                      (progn
+                        (when (> fidx 0)
+                          (push (nth (1- fidx) chain) mod-ins))
+                        (when (< fidx (1- (length chain)))
+                          (push (nth (1+ fidx) chain) mod-outs)))
+                    ;; Regular inner chain
+                    (push chain inner-chains))))
+              (box-diagram--render-graph
+               (nreverse inner-chains) defs outer-box
+               (nreverse mod-ins) (nreverse mod-outs) branch-groups))
+          ;; Simple chain-by-chain fallback (no double-box)
           (let ((rendered (make-hash-table :test 'equal)) (output '()))
-            (dolist (chain chains)
+            (dolist (chain all-chains)
               (when output (push "" output))
               (let ((trip (box-diagram--render-chain chain defs rendered)))
                 (push (nth 0 trip) output)

@@ -3,13 +3,16 @@ B := box("Ctrl");
 C := box("SEND");
 D := box("Scan\nData\nFIFO");
 E := box("Tap");
-F := double-box("Module", A,B,C,D,E);
+F := double-box("Module", [A,B,C,D,E]);
 I1:= text("S0_AXI");
 I2:= text("S1_AXI");
 O1:= text("MA_AXIS");
 O2:= text("MB_AXIS");
+I3:= text("CLK");
+O3:= text("DONE");
 
 F
-I1 -> A -> B -> C -> O1
+I1 -> A -> B -> C -> [O1, E]
 I2 -> D -> B
-C  -> E -> O2
+E -> O2
+I3 -> F -> O3
