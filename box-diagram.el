@@ -296,9 +296,9 @@ VL scheme     : 3 visual lines per grid row:
                     (* gap (max 0 (1- num-cols)))
                     exit-pad)
                  (length title)))
-           ;; 3 VLs per row; canvas = top+title+sep + n-in-vls + bottom = n-in-vls+4
+           ;; 3 VLs per row; canvas = top-border + n-in-vls + bottom-border = n-in-vls+2
            (n-in-vls (* 3 num-rows))
-           (n-vls    (+ n-in-vls 4))
+           (n-vls    (+ n-in-vls 2))
            (canvas-w (+ left-w 1 inside-w 1 40))
            (cv       (box-diagram--canvas n-vls canvas-w))
            (mod-lx   left-w)
@@ -307,22 +307,19 @@ VL scheme     : 3 visual lines per grid row:
            (arrow    (concat (make-string 2 ?\u2500) "\u25ba")))
 
       (cl-flet
-          ((abs-vl    (ivl) (+ 3 ivl))       ; canvas row = 3 + inside-VL (past top/title/sep)
+          ((abs-vl    (ivl) (+ 1 ivl))       ; canvas row = 1 + inside-VL (past top border)
            (ivl-top-r (r)   (* 3 r))          ; inside-VL: top border of row r
            (ivl-cont  (r)   (+ (* 3 r) 1))    ; inside-VL: content of row r
            (ivl-bot-r (r)   (+ (* 3 r) 2))    ; inside-VL: bottom border of row r
            (cx-of     (c)   (+ mod-lx 1 (aref col-x c))))
 
-        ;; Double-line box border: ╔═╗ top, ║ sides, ╠═╣ separator, ╚═╝ bottom
-        ;; Arrow crossings keep ║ intact: dashes║──►  (no ╪/╫/╬)
-        (box-diagram--put cv 0 mod-lx
-          (concat "╔" (make-string inside-w ?═) "╗"))
-        (let* ((tpad   (/ (- inside-w (length title)) 2))
-               (tpad-r (- inside-w (length title) tpad)))
-          (box-diagram--put cv 1 mod-lx
-            (concat "║" (make-string tpad ?\s) title (make-string tpad-r ?\s) "║")))
-        (box-diagram--put cv 2 mod-lx
-          (concat "╠" (make-string inside-w ?═) "╣"))
+        ;; Top border with embedded title: ╔══ Title ══╗
+        ;; Side walls ║, bottom border ╚═╝.  No separate title row or separator.
+        (let* ((tpad   (/ (- inside-w (length title) 2) 2))
+               (tpad-r (- inside-w (length title) 2 tpad)))
+          (box-diagram--put cv 0 mod-lx
+            (concat "╔" (make-string tpad ?═) " " title " "
+                    (make-string tpad-r ?═) "╗")))
         (box-diagram--put cv (1- n-vls) mod-lx
           (concat "╚" (make-string inside-w ?═) "╝"))
 
