@@ -8,6 +8,9 @@
 ;;   ID := box("label")
 ;;       Single-border box.  Use \n in label for multi-line text.
 ;;
+;;   ID := r-box("label")
+;;       Rounded-corner box (╭─╮ / ╰─╯).  Use \n for multi-line text.
+;;
 ;;   ID := double-box("label", [ID1, ID2, ...])
 ;;       Double-border container.  ID1..IDn are the node IDs rendered INSIDE
 ;;       the border.  All other nodes (text nodes) appear OUTSIDE.
@@ -59,6 +62,11 @@ Plist keys: :type (box|double-box|text), :label, :children (double-box)."
          "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*:=[ \t]*box(\"\\([^\"]+\\)\")" line)
         (push (cons (match-string 1 line)
                     (list :type 'box :label
+                          (replace-regexp-in-string "\\\\n" "\n" (match-string 2 line)))) defs))
+       ((string-match
+         "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*:=[ \t]*r-box(\"\\([^\"]+\\)\")" line)
+        (push (cons (match-string 1 line)
+                    (list :type 'r-box :label
                           (replace-regexp-in-string "\\\\n" "\n" (match-string 2 line)))) defs))
        ((string-match
          "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*:=[ \t]*text(\"\\([^\"]+\\)\")" line)
@@ -380,26 +388,21 @@ Returns a list of strings."
           (box-diagram--put cv (abs-vl ivl) mod-rx "\u2551"))
 
         ;; ---- Module-level port rows (above inner grid rows) ------------------
-        ;; Pattern (mod-in): "label ────────║──►" entering left wall
-        ;; Pattern (mod-out): "─────────────║──► label" exiting right wall
+        ;; Pattern (mod-in): "label ──────►║"  arrow ends AT left wall
+        ;; Pattern (mod-out): "║──► label"  arrow exits right wall; no interior fill
         (dotimes (i n-mod-ports)
           (let ((av (abs-vl i)))
-            ;; Left: module input
+            ;; Left: module input — arrow terminates at the left wall
             (when (< i (length mod-ins))
               (let* ((lbl (box-diagram--label (nth i mod-ins) defs))
                      (pad (make-string (- max-llbl (length lbl)) ?\s)))
-                (box-diagram--put cv av 0 (concat pad lbl dashes-out))
-                (box-diagram--put cv av (+ mod-lx 1) arrow)))
-            ;; Right: module output
+                (box-diagram--put cv av 0
+                  (concat pad lbl " "
+                          (make-string (- left-w max-llbl 1 (length arrow)) ?\u2500)
+                          arrow))))
+            ;; Right: module output — exits right wall with no interior fill
             (when (< i (length mod-outs))
-              (let* ((lbl       (box-diagram--label (nth i mod-outs) defs))
-                     (has-input (< i (length mod-ins)))
-                     ;; Start fill after the --> if there is also a mod-in
-                     (fill-x   (+ mod-lx (if has-input 4 1)))
-                     (fill-n   (- mod-rx fill-x)))
-                (when (> fill-n 0)
-                  (box-diagram--put cv av fill-x
-                    (make-string fill-n ?\u2500)))
+              (let ((lbl (box-diagram--label (nth i mod-outs) defs)))
                 (box-diagram--put cv av (+ mod-rx 1)
                   (concat arrow " " lbl))))))
 
@@ -418,8 +421,13 @@ Returns a list of strings."
                                #'<))
                  (pr-min (car prows))
                  (pr-max (car (last prows)))
-                 (tl "\u250c") (tr "\u2510")
-                 (bl "\u2514") (hl "\u2500")
+                 (def-type (let ((d (cdr (assoc id defs))))
+                             (and d (plist-get d :type))))
+                 (tl (if (eq def-type 'r-box) "\u256d" "\u250c"))
+                 (tr (if (eq def-type 'r-box) "\u256e" "\u2510"))
+                 (bl (if (eq def-type 'r-box) "\u2570" "\u2514"))
+                 (br (if (eq def-type 'r-box) "\u256f" "\u2518"))
+                 (hl "\u2500")
                  (vl "\u2502") (te "\u251c"))
 
             ;; Top border
@@ -469,7 +477,7 @@ Returns a list of strings."
 
             ;; Bottom border
             (box-diagram--put cv (abs-vl (ivl-bot-r pr-max)) cx
-              (concat bl (make-string (- bw 2) (string-to-char hl)) "\u2518"))
+              (concat bl (make-string (- bw 2) (string-to-char hl)) br))
 
             ;; Side walls between consecutive port-rows
             (when (> pr-max pr-min)
@@ -572,6 +580,13 @@ Returns a list of strings."
         (list (concat tl (make-string (+ w 2) (string-to-char hl)) tr)
               (concat vl " " label " " vl)
               (concat bl (make-string (+ w 2) (string-to-char hl)) "\u2518"))))
+     ((eq type 'r-box)
+      (let* ((label (if (gethash node rendered) (concat "[" base "]") base))
+             (w     (length label)))
+        (puthash node t rendered)
+        (list (concat "\u256d" (make-string (+ w 2) (string-to-char hl)) "\u256e")
+              (concat vl " " label " " vl)
+              (concat "\u2570" (make-string (+ w 2) (string-to-char hl)) "\u256f"))))
      (t (list (box-diagram--spaces (length base)) base
               (box-diagram--spaces (length base)))))))
 
