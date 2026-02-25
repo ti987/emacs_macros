@@ -1,0 +1,15 @@
+A := box("Raster");
+B := box("Ctrl");
+C := box("SEND");
+D := box("SCAN");
+E := box("Tap");
+F := double-box("Module", A,B,C,D,E);
+I1:= text("S0_AXI");
+I2:= text("S1_AXI");
+O1:= text("MA_AXIS");
+O2:= text("MB_AXIS");
+
+F
+I1 -> A -> B -> C -> O1
+I2 -> D -> B
+C  -> E -> O2
