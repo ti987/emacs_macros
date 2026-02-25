@@ -56,7 +56,8 @@ Plist keys: :type (box|double-box|text), :label, :children (double-box)."
        ((string-match
          "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*:=[ \t]*box(\"\\([^\"]+\\)\")" line)
         (push (cons (match-string 1 line)
-                    (list :type 'box :label (match-string 2 line))) defs))
+                    (list :type 'box :label
+                          (replace-regexp-in-string "\\\\n" "\n" (match-string 2 line)))) defs))
        ((string-match
          "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*:=[ \t]*text(\"\\([^\"]+\\)\")" line)
         (push (cons (match-string 1 line)
@@ -104,9 +105,13 @@ chains on one line."
   (let ((def (cdr (assoc id defs))))
     (if (and def (plist-get def :label)) (plist-get def :label) id)))
 
+(defun box-diagram--label-lines (label)
+  "Split LABEL on newline characters; return list of line strings."
+  (split-string label "\n"))
+
 (defun box-diagram--bw (label)
-  "Outer character width of a box: | + space + label + space + | = len+4."
-  (+ (length label) 4))
+  "Outer character width of a box: max line width + 4."
+  (+ (apply #'max (mapcar #'length (box-diagram--label-lines label))) 4))
 
 (defun box-diagram--assign-rows (chains)
   "Return a hash id->row-number.
@@ -296,21 +301,43 @@ VL scheme     : 3 visual lines per grid row:
                     (* gap (max 0 (1- num-cols)))
                     exit-pad)
                  (length title)))
-           ;; 3 VLs per row; canvas = top-border + n-in-vls + bottom-border = n-in-vls+2
-           (n-in-vls (* 3 num-rows))
+           ;; Dynamic VL scheme: each grid row r gets row-heights[r] content lines
+           ;; ivl-base[r]    = sum_{r'<r}(row-heights[r']+2)
+           ;; ivl-top(r)     = ivl-base[r]
+           ;; ivl-cont(r,l)  = ivl-base[r] + 1 + l   (l=0..row-heights[r]-1)
+           ;; ivl-bot(r)     = ivl-base[r] + row-heights[r] + 1
+           ;; n-in-vls       = sum_{r}(row-heights[r]+2)
+           (row-heights
+            (let ((v (make-vector num-rows 1)))
+              (dolist (id inner-order)
+                (let* ((r   (gethash id rows 0))
+                       (h   (length (box-diagram--label-lines
+                                     (box-diagram--label id defs)))))
+                  (when (> h (aref v r)) (aset v r h))))
+              v))
+           (ivl-base
+            (let ((v (make-vector num-rows 0)) (acc 0))
+              (dotimes (r num-rows)
+                (aset v r acc)
+                (setq acc (+ acc (aref row-heights r) 2)))
+              v))
+           (n-in-vls
+            (let ((acc 0))
+              (dotimes (r num-rows) (setq acc (+ acc (aref row-heights r) 2)))
+              acc))
            (n-vls    (+ n-in-vls 2))
            (canvas-w (+ left-w 1 inside-w 1 40))
            (cv       (box-diagram--canvas n-vls canvas-w))
            (mod-lx   left-w)
            (mod-rx   (+ mod-lx 1 inside-w))
            ;; Arrow string used between boxes and at entries
-           (arrow    (concat (make-string 2 ?\u2500) "\u25ba")))
+           (arrow    (concat (make-string 2 ?─) "►")))
 
       (cl-flet
-          ((abs-vl    (ivl) (+ 1 ivl))       ; canvas row = 1 + inside-VL (past top border)
-           (ivl-top-r (r)   (* 3 r))          ; inside-VL: top border of row r
-           (ivl-cont  (r)   (+ (* 3 r) 1))    ; inside-VL: content of row r
-           (ivl-bot-r (r)   (+ (* 3 r) 2))    ; inside-VL: bottom border of row r
+          ((abs-vl    (ivl) (+ 1 ivl))       ; canvas row = 1 + inside-VL
+           (ivl-top-r (r)   (aref ivl-base r))
+           (ivl-cont  (r l) (+ (aref ivl-base r) 1 l))   ; l = line index within row
+           (ivl-bot-r (r)   (+ (aref ivl-base r) (aref row-heights r) 1))
            (cx-of     (c)   (+ mod-lx 1 (aref col-x c))))
 
         ;; Top border with embedded title: ╔══ Title ══╗
@@ -343,85 +370,80 @@ VL scheme     : 3 visual lines per grid row:
                                #'<))
                  (pr-min (car prows))
                  (pr-max (car (last prows)))
-                 ;; Box drawing characters
                  (tl "\u250c") (tr "\u2510")
-                 (bl "\u2514") (br "\u2518")
-                 (vl "\u2502") (hl "\u2500")
-                 (te "\u251c"))  ; T-junction right (for output port)
+                 (bl "\u2514") (hl "\u2500")
+                 (vl "\u2502") (te "\u251c"))
 
             ;; Top border
             (box-diagram--put cv (abs-vl (ivl-top-r pr-min)) cx
               (concat tl (make-string (- bw 2) (string-to-char hl)) tr))
 
-            ;; Content rows
-            (dolist (pr prows)
-              (let* ((ivl-c   (ivl-cont pr))
-                     (av      (abs-vl ivl-c))
-                     (is-lbl  (= pr pr-min))
-                     ;; Internal output: target is an inner node
-                     (out-int (cl-some (lambda (p)
-                                         (and (= (cdr p) pr)
-                                              (gethash (car p) inner-set)))
-                                       oports))
-                     ;; External output: target is outside the module
-                     (out-ext (cl-find-if
-                               (lambda (p)
-                                 (and (= (cdr p) pr)
-                                      (not (gethash (car p) inner-set))))
-                               oports))
-                     (has-out (or out-int out-ext))
-                     (has-in  (cl-some (lambda (p) (= (cdr p) pr)) iports))
-                     (inner   (if is-lbl
-                                  (let* ((s   (concat " " lbl " "))
-                                         (pad (- bw 2 (length s))))
-                                    (concat s (make-string (max 0 pad) ?\s)))
-                                (make-string (- bw 2) ?\s)))
-                     (rch     (if has-out te vl)))
-                ;; Box cell
-                (box-diagram--put cv av cx (concat vl inner rch))
-                ;; Input arrow: --> just before left wall
-                (when has-in
-                  (box-diagram--put cv av (- cx 3) arrow))
-                ;; Internal output: --> just after right wall
-                (when out-int
-                  (box-diagram--put cv av (+ cx bw) arrow))
-                ;; External output: fill horiz lines from right wall to | wall,
-                ;; then --> label after |.
-                ;; Pattern: box+-----|-->  label
-                (when out-ext
-                  (let* ((fill-x (+ cx bw))
-                         (fill-n (- mod-rx fill-x))
-                         (to-lbl (box-diagram--label (car out-ext) defs)))
-                    (when (> fill-n 0)
-                      (box-diagram--put cv av fill-x
-                        (make-string fill-n (string-to-char hl))))
-                    (box-diagram--put cv av (+ mod-rx 1)
-                      (concat arrow " " to-lbl))))))
+            ;; Content rows: draw all label lines for the primary port-row,
+            ;; walls for non-primary port-rows.
+            (let* ((lbls   (box-diagram--label-lines lbl))
+                   (n-lbls (length lbls)))
+              (dolist (pr prows)
+                (let* ((out-int (cl-some (lambda (p)
+                                           (and (= (cdr p) pr)
+                                                (gethash (car p) inner-set)))
+                                         oports))
+                       (out-ext (cl-find-if
+                                 (lambda (p)
+                                   (and (= (cdr p) pr)
+                                        (not (gethash (car p) inner-set))))
+                                 oports))
+                       (has-out (or out-int out-ext))
+                       (has-in  (cl-some (lambda (p) (= (cdr p) pr)) iports))
+                       (rh      (aref row-heights pr)))
+                  (dotimes (l rh)
+                    (let* ((av      (abs-vl (ivl-cont pr l)))
+                           (lbl-line (and (= pr pr-min) (< l n-lbls)))
+                           (inner   (if lbl-line
+                                        (let* ((s   (concat " " (nth l lbls) " "))
+                                               (pad (- bw 2 (length s))))
+                                          (concat s (make-string (max 0 pad) ?\s)))
+                                      (make-string (- bw 2) ?\s)))
+                           (rch     (if (and has-out (= l 0)) te vl)))
+                      (box-diagram--put cv av cx (concat vl inner rch))
+                      (when (= l 0)
+                        (when has-in
+                          (box-diagram--put cv av (- cx 3) arrow))
+                        (when out-int
+                          (box-diagram--put cv av (+ cx bw) arrow))
+                        (when out-ext
+                          (let* ((fill-x (+ cx bw))
+                                 (fill-n (- mod-rx fill-x))
+                                 (to-lbl (box-diagram--label (car out-ext) defs)))
+                            (when (> fill-n 0)
+                              (box-diagram--put cv av fill-x
+                                (make-string fill-n (string-to-char hl))))
+                            (box-diagram--put cv av (+ mod-rx 1)
+                              (concat arrow " " to-lbl))))))))))
 
             ;; Bottom border
             (box-diagram--put cv (abs-vl (ivl-bot-r pr-max)) cx
-              (concat bl (make-string (- bw 2) (string-to-char hl)) br))
+              (concat bl (make-string (- bw 2) (string-to-char hl)) "\u2518"))
 
-            ;; Walls between consecutive content rows (tall multi-row boxes)
+            ;; Walls for tall (multi-port) boxes: fill all VLs between last
+            ;; content line of one port-row and first content line of the next.
             (when (> pr-max pr-min)
               (let ((pr pr-min))
                 (while (< pr pr-max)
-                  (let* ((ivl-a (ivl-cont pr))
-                         (ivl-b (ivl-cont (1+ pr))))
-                    (let ((ivl (1+ ivl-a)))
-                      (while (< ivl ivl-b)
+                  (let* ((ivl-after  (1+ (ivl-cont pr (1- (aref row-heights pr)))))
+                         (ivl-before (ivl-cont (1+ pr) 0)))
+                    (let ((ivl ivl-after))
+                      (while (< ivl ivl-before)
                         (box-diagram--put cv (abs-vl ivl) cx           vl)
                         (box-diagram--put cv (abs-vl ivl) (+ cx bw -1) vl)
                         (setq ivl (1+ ivl)))))
                   (setq pr (1+ pr)))))))
-
         ;; ---- Draw outside-left entries -------------------------------------
         ;; Pattern: "S0_AXI -------|-->" + (| already drawn) + inside "-->| box"
         (maphash
          (lambda (pr from-id)
            (let* ((lbl (box-diagram--label from-id defs))
                   (pad (make-string (- max-llbl (length lbl)) ?\s))
-                  (av  (abs-vl (ivl-cont pr))))
+                  (av  (abs-vl (ivl-cont pr 0))))
              ;; Dashes approach the | from the left (last char is dash, not arrowhead)
              (box-diagram--put cv av 0 (concat pad lbl dashes-out))
              ;; --> enters the module on the right side of |

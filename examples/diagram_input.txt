@@ -1,7 +1,7 @@
 A := box("Raster");
 B := box("Ctrl");
 C := box("SEND");
-D := box("SCAN");
+D := box("Scan\nData\nFIFO");
 E := box("Tap");
 F := double-box("Module", A,B,C,D,E);
 I1:= text("S0_AXI");
