@@ -43,6 +43,15 @@
 ;;
 ;;     I3 -> F -> O3       (arrow enters/exits the module border)
 ;;
+;;   Dot-edge attributes on a node override the default left/right entry/exit:
+;;
+;;     ID1 -> ID2.b    ; arrow from ID1 right to ID2 bottom  (▲ at bottom border)
+;;     ID1 -> ID2.t    ; arrow from ID1 right to ID2 top     (▼ at top border)
+;;     ID1.b -> ID2    ; arrow from ID1 bottom to ID2 left   (▼ at bottom border)
+;;     ID1.t -> ID2    ; arrow from ID1 top to ID2 left      (▲ at top border)
+;;
+;;   .l (left) and .r (right) are accepted but are equivalent to the defaults.
+;;
 ;; Usage:
 ;;   M-x box-diagram-render        - render the current buffer
 ;;   M-x box-diagram-render-region - render the selected region
@@ -90,13 +99,22 @@ Plist keys: :type (box|double-box|text), :label, :children (double-box)."
           (push (cons id (list :type 'double-box :label label :children kids)) defs)))))
     (nreverse defs)))
 
+(defun box-diagram--split-node (s)
+  "Split 'ID' or 'ID.EDGE' string into (ID . EDGE-OR-NIL).
+EDGE is one of \"b\" (bottom), \"t\" (top), \"l\" (left), \"r\" (right)."
+  (let ((s (string-trim s)))
+    (if (string-match "^\\([A-Za-z0-9_]+\\)\\.\\([btlr]\\)$" s)
+        (cons (match-string 1 s) (match-string 2 s))
+      (cons s nil))))
+
 (defun box-diagram--parse-chains (text)
-  "Return (CHAINS . BRANCH-GROUPS) from TEXT.
-CHAINS is a list of chains (lists of ID strings).  A final [A, B, C] segment
-is expanded into one chain per target.
-BRANCH-GROUPS is an alist (SOURCE-ID . (TARGET-ID ...)) recording each
-bracket fan-out group so the renderer can draw branch connectors."
-  (let (chains branch-groups)
+  "Return (CHAINS BRANCH-GROUPS EDGE-ALIST) from TEXT.
+CHAINS is a list of chains (lists of plain ID strings).  A final [A, B]
+segment is expanded into one chain per target.
+BRANCH-GROUPS is an alist (SOURCE-ID . (TARGET-ID ...)) for fan-outs.
+EDGE-ALIST is an alist ((SRC-ID . TGT-ID) . (SRC-EDGE . TGT-EDGE)) where
+each EDGE is nil or one of \"b\", \"t\", \"l\", \"r\" (see box-diagram--split-node)."
+  (let (chains branch-groups edge-alist)
     (dolist (line (split-string text "\n"))
       (let ((trimmed (string-trim line)))
         (when (and (> (length trimmed) 0)
@@ -105,35 +123,72 @@ bracket fan-out group so the renderer can draw branch connectors."
           (dolist (seg (split-string trimmed ";"))
             (let ((seg (string-trim seg)))
               (when (string-match-p "->\\|\u2192" seg)
-                (let* ((parts (mapcar #'string-trim
-                                      (split-string seg
-                                                    "[ \t]*\\(->\\|\u2192\\)[ \t]*" t))))
-                  (when (cdr parts)
-                    (let* ((last-part (car (last parts)))
-                           (prefix    (butlast parts)))
+                (let* ((raw-parts (mapcar #'string-trim
+                                          (split-string seg
+                                                        "[ \t]*\\(->\\|\u2192\\)[ \t]*" t))))
+                  (when (cdr raw-parts)
+                    (let* ((last-raw  (car (last raw-parts)))
+                           (pfx-raw   (butlast raw-parts)))
                       (if (string-match
-                           "^\\[[ \t]*\\([^]]+\\)[ \t]*\\]$" last-part)
+                           "^\\[[ \t]*\\([^]]+\\)[ \t]*\\]$" last-raw)
                           ;; Bracket group: fan out from last prefix node
-                          (let* ((inner   (match-string 1 last-part))
-                                 (targets (mapcar #'string-trim
-                                                  (split-string inner ",")))
-                                 (source  (car (last prefix))))
-                            ;; Record branch group for visual rendering
+                          (let* ((inner      (match-string 1 last-raw))
+                                 (tgt-raw    (mapcar #'string-trim
+                                                     (split-string inner ",")))
+                                 (pfx-split  (mapcar #'box-diagram--split-node pfx-raw))
+                                 (pfx-ids    (mapcar #'car pfx-split))
+                                 (pfx-edges  (mapcar #'cdr pfx-split))
+                                 (tgt-split  (mapcar #'box-diagram--split-node tgt-raw))
+                                 (tgt-ids    (mapcar #'car tgt-split))
+                                 (tgt-edges  (mapcar #'cdr tgt-split))
+                                 (source     (car (last pfx-ids)))
+                                 (src-edge   (car (last pfx-edges))))
+                            ;; Record edges for consecutive prefix pairs
+                            (let ((i 0))
+                              (while (< i (1- (length pfx-ids)))
+                                (let ((fe (nth i pfx-edges))
+                                      (te (nth (1+ i) pfx-edges)))
+                                  (when (or fe te)
+                                    (push (cons (cons (nth i pfx-ids)
+                                                      (nth (1+ i) pfx-ids))
+                                                (cons fe te))
+                                          edge-alist)))
+                                (setq i (1+ i))))
+                            ;; Record branch group
                             (when source
                               (let ((existing (assoc source branch-groups)))
                                 (if existing
                                     (setcdr existing
-                                            (cl-union (cdr existing) targets
+                                            (cl-union (cdr existing) tgt-ids
                                                       :test #'equal))
-                                  (push (cons source targets) branch-groups))))
+                                  (push (cons source tgt-ids) branch-groups))))
                             ;; Expand: one chain per target
-                            (dolist (tgt targets)
-                              (let ((chain (append prefix (list tgt))))
-                                (when (cdr chain)
-                                  (push chain chains)))))
+                            (let ((i 0))
+                              (while (< i (length tgt-ids))
+                                (let* ((tgt-id (nth i tgt-ids))
+                                       (tgt-e  (nth i tgt-edges))
+                                       (chain  (append pfx-ids (list tgt-id))))
+                                  (when (cdr chain) (push chain chains))
+                                  (when (or src-edge tgt-e)
+                                    (push (cons (cons source tgt-id)
+                                                (cons src-edge tgt-e))
+                                          edge-alist)))
+                                (setq i (1+ i)))))
                         ;; Normal chain
-                        (push parts chains)))))))))))
-    (cons (nreverse chains) branch-groups)))
+                        (let* ((split-parts (mapcar #'box-diagram--split-node raw-parts))
+                               (ids   (mapcar #'car split-parts))
+                               (edges (mapcar #'cdr split-parts)))
+                          (push ids chains)
+                          (let ((i 0))
+                            (while (< i (1- (length ids)))
+                              (let ((fe (nth i edges))
+                                    (te (nth (1+ i) edges)))
+                                (when (or fe te)
+                                  (push (cons (cons (nth i ids) (nth (1+ i) ids))
+                                              (cons fe te))
+                                        edge-alist)))
+                              (setq i (1+ i)))))))))))))))
+    (list (nreverse chains) branch-groups edge-alist)))
 
 ;;; ---- Graph-based layout (used when a double-box container is declared) ----
 
@@ -189,23 +244,33 @@ Column = longest path from any source inside node (Bellman-Ford)."
             (setq rest (cdr rest))))))
     cols))
 
-(defun box-diagram--collect-ports (chains rows inner-set)
+(defun box-diagram--collect-ports (chains rows inner-set &optional edge-alist)
   "Return (IN-PORTS . OUT-PORTS) where each is a hash id->list of (peer . port-row).
-Port-row for edge (f->t) = max(row[f], row[t])."
+Port-row for edge (f->t) = max(row[f], row[t]).
+Connections whose entry in EDGE-ALIST carries a .b or .t edge qualifier have
+their normal horizontal port suppressed; they are rendered as vertical arrows."
   (let ((in-p  (make-hash-table :test 'equal))
         (out-p (make-hash-table :test 'equal)))
     (dolist (chain chains)
       (let ((rest chain))
         (while (cdr rest)
-          (let* ((f   (car rest))
-                 (t_  (cadr rest))
-                 (pr  (max (gethash f rows 0) (gethash t_ rows 0))))
-            (let ((cur (gethash f out-p '())))
-              (unless (assoc t_ cur)
-                (puthash f (append cur (list (cons t_ pr))) out-p)))
-            (let ((cur (gethash t_ in-p '())))
-              (unless (assoc f cur)
-                (puthash t_ (append cur (list (cons f pr))) in-p))))
+          (let* ((f    (car rest))
+                 (t_   (cadr rest))
+                 (eq-e (cdr (cl-assoc (cons f t_) edge-alist :test #'equal)))
+                 (f-e  (car eq-e))
+                 (t-e  (cdr eq-e))
+                 ;; Suppress horizontal port for top/bottom edge qualifiers
+                 (skip-out (member f-e '("b" "t")))
+                 (skip-in  (member t-e '("b" "t")))
+                 (pr   (max (gethash f rows 0) (gethash t_ rows 0))))
+            (unless skip-out
+              (let ((cur (gethash f out-p '())))
+                (unless (assoc t_ cur)
+                  (puthash f (append cur (list (cons t_ pr))) out-p))))
+            (unless skip-in
+              (let ((cur (gethash t_ in-p '())))
+                (unless (assoc f cur)
+                  (puthash t_ (append cur (list (cons f pr))) in-p)))))
           (setq rest (cdr rest)))))
     ;; Sort port lists by port-row
     (dolist (id (hash-table-keys in-p))
@@ -248,12 +313,13 @@ Port-row for edge (f->t) = max(row[f], row[t])."
 
 ;;; ---- Graph renderer --------------------------------------------------------
 
-(defun box-diagram--render-graph (chains defs outer-def mod-ins mod-outs branch-groups)
+(defun box-diagram--render-graph (chains defs outer-def mod-ins mod-outs branch-groups edge-alist)
   "Render diagram using graph-based layout.
 CHAINS/DEFS describe the inner topology.
 OUTER-DEF is the double-box plist (:label :children).
 MOD-INS / MOD-OUTS are lists of IDs for module-level border connections.
 BRANCH-GROUPS is alist (SOURCE . (TARGET ...)) for bracket fan-out groups.
+EDGE-ALIST is alist ((SRC . TGT) . (SRC-EDGE . TGT-EDGE)) for dot-edge attrs.
 Returns a list of strings."
   (let* ((inner-ids (plist-get outer-def :children))
          (title     (plist-get outer-def :label))
@@ -261,7 +327,7 @@ Returns a list of strings."
                       (dolist (id inner-ids) (puthash id t h)) h))
          (rows (box-diagram--assign-rows chains))
          (cols (box-diagram--assign-cols chains inner-set))
-         (ports (box-diagram--collect-ports chains rows inner-set))
+         (ports (box-diagram--collect-ports chains rows inner-set edge-alist))
          (in-ports  (car ports))
          (out-ports (cdr ports))
          ;; Inner nodes in first-appearance order across chains
@@ -550,6 +616,86 @@ Returns a list of strings."
                               (setq ivl (1+ ivl)))))
                         (setq i (1+ i))))))))))
 
+        ;; ---- Draw edge-qualified (vertical) connections ---------------------
+        (dolist (entry edge-alist)
+          (let* ((key    (car entry))
+                 (src-id (car key))
+                 (tgt-id (cdr key))
+                 (src-e  (cadr entry))
+                 (tgt-e  (cddr entry))
+                 (r-src  (gethash src-id rows))
+                 (c-src  (gethash src-id cols))
+                 (r-tgt  (gethash tgt-id rows))
+                 (c-tgt  (gethash tgt-id cols)))
+            (when (and r-src c-src r-tgt c-tgt)
+              (let* ((cx-src      (cx-of c-src))
+                     (bw-src      (aref col-widths c-src))
+                     (cx-tgt      (cx-of c-tgt))
+                     (bw-tgt      (aref col-widths c-tgt))
+                     (vc-tgt      (+ cx-tgt (/ bw-tgt 2)))
+                     (vc-src      (+ cx-src (/ bw-src 2)))
+                     (src-right   (+ cx-src bw-src))
+                     (av-src-cont (abs-vl (ivl-cont r-src 0)))
+                     (av-tgt-top  (abs-vl (ivl-top-r r-tgt)))
+                     (av-tgt-bot  (abs-vl (ivl-bot-r r-tgt)))
+                     (av-src-top  (abs-vl (ivl-top-r r-src)))
+                     (av-src-bot  (abs-vl (ivl-bot-r r-src))))
+                (cl-flet ((hfill (av x1 x2)
+                            (dotimes (k (max 0 (- x2 x1)))
+                              (box-diagram--put cv av (+ x1 k) "\u2500"))))
+                  (cond
+                   ;; tgt.t : signal flows DOWN from src (above) to tgt top
+                   ;;   natural when r-src < r-tgt
+                   ((and (equal tgt-e "t") (< r-src r-tgt))
+                    (box-diagram--put cv av-tgt-top vc-tgt "\u25bc") ; ▼
+                    (let ((r (1+ av-src-cont)))
+                      (while (< r av-tgt-top)
+                        (box-diagram--put cv r vc-tgt "\u2502") ; │
+                        (setq r (1+ r))))
+                    (box-diagram--put cv av-src-cont vc-tgt "\u2510") ; ┐
+                    (hfill av-src-cont src-right vc-tgt)
+                    (box-diagram--put cv av-src-cont (1- src-right) "\u251c")) ; ├
+
+                   ;; tgt.b : signal flows UP from src (below) to tgt bottom
+                   ;;   natural when r-src > r-tgt
+                   ((and (equal tgt-e "b") (> r-src r-tgt))
+                    (box-diagram--put cv av-tgt-bot vc-tgt "\u25b2") ; ▲
+                    (let ((r (1+ av-tgt-bot)))
+                      (while (< r av-src-cont)
+                        (box-diagram--put cv r vc-tgt "\u2502") ; │
+                        (setq r (1+ r))))
+                    (box-diagram--put cv av-src-cont vc-tgt "\u2518") ; ┘
+                    (hfill av-src-cont src-right vc-tgt)
+                    (box-diagram--put cv av-src-cont (1- src-right) "\u251c")) ; ├
+
+                   ;; src.b : signal exits src bottom, flows DOWN to tgt (below)
+                   ;;   natural when r-src < r-tgt
+                   ((and (equal src-e "b") (< r-src r-tgt))
+                    (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
+                          (tgt-entry   (- cx-tgt 3)))
+                      (box-diagram--put cv av-src-bot vc-src "\u25bc") ; ▼
+                      (let ((r (1+ av-src-bot)))
+                        (while (< r av-tgt-cont)
+                          (box-diagram--put cv r vc-src "\u2502") ; │
+                          (setq r (1+ r))))
+                      (box-diagram--put cv av-tgt-cont vc-src "\u2514") ; └
+                      (hfill av-tgt-cont (1+ vc-src) tgt-entry)
+                      (box-diagram--put cv av-tgt-cont tgt-entry arrow)))
+
+                   ;; src.t : signal exits src top, flows UP to tgt (above)
+                   ;;   natural when r-src > r-tgt
+                   ((and (equal src-e "t") (> r-src r-tgt))
+                    (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
+                          (tgt-entry   (- cx-tgt 3)))
+                      (box-diagram--put cv av-src-top vc-src "\u25b2") ; ▲
+                      (let ((r (1+ av-tgt-cont)))
+                        (while (< r av-src-top)
+                          (box-diagram--put cv r vc-src "\u2502") ; │
+                          (setq r (1+ r))))
+                      (box-diagram--put cv av-tgt-cont vc-src "\u250c") ; ┌
+                      (hfill av-tgt-cont (1+ vc-src) tgt-entry)
+                      (box-diagram--put cv av-tgt-cont tgt-entry arrow)))))))))
+
         (box-diagram--canvas-to-lines cv)))))
 
 ;;; ---- Simple chain renderer (fallback when no double-box) ------------------
@@ -641,9 +787,10 @@ Returns a list of strings."
                     (push l new)))
                 (setq conn-text (mapconcat #'identity (nreverse new) "\n")))))))
       ;; Parse chains (may contain outer-id for module-level connections)
-      (let* ((parsed       (box-diagram--parse-chains conn-text))
-             (all-chains   (car parsed))
-             (branch-groups (cdr parsed)))
+      (let* ((parsed        (box-diagram--parse-chains conn-text))
+             (all-chains    (nth 0 parsed))
+             (branch-groups (nth 1 parsed))
+             (edge-alist    (nth 2 parsed)))
         (if outer-box
             ;; Split chains: those touching outer-id go to mod-ins/mod-outs;
             ;; the rest are inner chains for graph layout.
@@ -661,7 +808,7 @@ Returns a list of strings."
                     (push chain inner-chains))))
               (box-diagram--render-graph
                (nreverse inner-chains) defs outer-box
-               (nreverse mod-ins) (nreverse mod-outs) branch-groups))
+               (nreverse mod-ins) (nreverse mod-outs) branch-groups edge-alist))
           ;; Simple chain-by-chain fallback (no double-box)
           (let ((rendered (make-hash-table :test 'equal)) (output '()))
             (dolist (chain all-chains)
