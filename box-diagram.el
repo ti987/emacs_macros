@@ -244,6 +244,53 @@ Column = longest path from any source inside node (Bellman-Ford)."
             (setq rest (cdr rest))))))
     cols))
 
+(defun box-diagram--bump-vertical-rows (chains rows inner-set edge-alist)
+  "Ensure targets of .b/.t edges are placed below source's max horizontal port-row.
+CHAINS is the list of connection chains.
+ROWS is a hash id->row-number, modified in place.
+INNER-SET is a hash id->t of nodes rendered inside the double-box border.
+EDGE-ALIST maps (SRC-ID . TGT-ID) -> (SRC-EDGE . TGT-EDGE) for dot-edge attrs.
+Call this after `box-diagram--assign-rows', before `box-diagram--assign-cols'."
+  (dolist (entry edge-alist)
+    (let* ((key    (car entry))
+           (src-id (car key))
+           (tgt-id (cdr key))
+           (src-e  (cadr entry)))
+      ;; Only handle src.b / src.t edges where both endpoints are inner nodes
+      (when (and (member src-e '("b" "t"))
+                 (gethash src-id inner-set)
+                 (gethash tgt-id inner-set))
+        ;; Compute src's max port-row considering only horizontal connections
+        (let ((src-max-pr (gethash src-id rows 0)))
+          (dolist (chain chains)
+            (let ((rest chain))
+              (while (cdr rest)
+                (let* ((f   (car rest))
+                       (t_  (cadr rest))
+                       (ee  (cdr (cl-assoc (cons f t_) edge-alist :test #'equal)))
+                       (fe  (car ee)))
+                  ;; Horizontal exits from src (fe not b/t)
+                  (when (and (equal f src-id)
+                             (not (member fe '("b" "t"))))
+                    (let ((pr (max (gethash f rows 0) (gethash t_ rows 0))))
+                      (when (> pr src-max-pr) (setq src-max-pr pr))))
+                  ;; Any connection into src counts for its port-row
+                  (when (equal t_ src-id)
+                    (let ((pr (max (gethash f rows 0) (gethash t_ rows 0))))
+                      (when (> pr src-max-pr) (setq src-max-pr pr)))))
+                (setq rest (cdr rest)))))
+          ;; If tgt would overlap src's span, bump tgt and later inner nodes
+          (let ((tgt-row (gethash tgt-id rows 0)))
+            (when (<= tgt-row src-max-pr)
+              (let* ((new-row (1+ src-max-pr))
+                     (delta   (- new-row tgt-row)))
+                (maphash (lambda (id r)
+                           (when (and (>= r tgt-row)
+                                      (not (equal id src-id))
+                                      (gethash id inner-set))
+                             (puthash id (+ r delta) rows)))
+                         rows)))))))))
+
 (defun box-diagram--collect-ports (chains rows inner-set &optional edge-alist)
   "Return (IN-PORTS . OUT-PORTS) where each is a hash id->list of (peer . port-row).
 Port-row for edge (f->t) = max(row[f], row[t]).
@@ -325,7 +372,9 @@ Returns a list of strings."
          (title     (plist-get outer-def :label))
          (inner-set (let ((h (make-hash-table :test 'equal)))
                       (dolist (id inner-ids) (puthash id t h)) h))
-         (rows (box-diagram--assign-rows chains))
+         (rows (let ((r (box-diagram--assign-rows chains)))
+                 (box-diagram--bump-vertical-rows chains r inner-set edge-alist)
+                 r))
          (cols (box-diagram--assign-cols chains inner-set))
          (ports (box-diagram--collect-ports chains rows inner-set edge-alist))
          (in-ports  (car ports))
@@ -411,25 +460,46 @@ Returns a list of strings."
                                    (box-diagram--label id defs)))))
                   (when (> h (aref v r)) (aset v r h))))
               v))
-           ;; ivl-base[r]: first inside-VL for grid row r
-           ;; (offset by n-mod-ports so module port rows come first)
+           ;; ivl-base[r]: first inside-VL for grid row r.
+           ;; Layout per row: top-border + rh content rows + bottom-border + 1 gap.
+           ;; The gap row gives space for ▼/▲ indicators outside box borders.
            (ivl-base
             (let ((v (make-vector num-rows 0)) (acc n-mod-ports))
               (dotimes (r num-rows)
                 (aset v r acc)
-                (setq acc (+ acc (aref row-heights r) 2)))
+                (setq acc (+ acc (aref row-heights r) 3)))
               v))
            (n-in-vls
             (+ n-mod-ports
                (let ((acc 0))
-                 (dotimes (r num-rows) (setq acc (+ acc (aref row-heights r) 2)))
+                 (dotimes (r num-rows) (setq acc (+ acc (aref row-heights r) 3)))
                  acc)))
            (n-vls    (+ n-in-vls 2))
            (canvas-w (+ left-w 1 inside-w 1 40))
            (cv       (box-diagram--canvas n-vls canvas-w))
            (mod-lx   left-w)
            (mod-rx   (+ mod-lx 1 inside-w))
-           (arrow    (concat (make-string 2 ?\u2500) "\u25ba")))
+           (arrow    (concat (make-string 2 ?\u2500) "\u25ba"))
+           ;; secondary-branch-pts: (src-id . pr) → t for all but the topmost
+           ;; branch-pr of each fan-out source (those rows get │ not ├ on box wall).
+           (secondary-branch-pts
+            (let ((h (make-hash-table :test #'equal)))
+              (dolist (bg branch-groups)
+                (when (gethash (car bg) inner-set)
+                  (let* ((source  (car bg))
+                         (targets (cdr bg))
+                         (bprs
+                          (sort (delq nil
+                                      (mapcar (lambda (tgt)
+                                                (let ((p (assoc tgt
+                                                                (gethash source
+                                                                         out-ports '()))))
+                                                  (when p (cdr p))))
+                                              targets))
+                                #'<)))
+                    (dolist (pr (cdr bprs))
+                      (puthash (cons source pr) t h)))))
+              h)))
 
       (cl-flet
           ((abs-vl    (ivl) (+ 1 ivl))
@@ -524,7 +594,10 @@ Returns a list of strings."
                                                (pad (- bw 2 (length s))))
                                           (concat s (make-string (max 0 pad) ?\s)))
                                       (make-string (- bw 2) ?\s)))
-                           (rch     (if (and has-out (= l 0)) te vl)))
+                           (rch     (if (and has-out (= l 0)
+                                            (not (gethash (cons id pr)
+                                                          secondary-branch-pts)))
+                                        te vl)))
                       (box-diagram--put cv av cx (concat vl inner rch))
                       (when (= l 0)
                         (when has-in
@@ -636,63 +709,89 @@ Returns a list of strings."
                      (vc-src      (+ cx-src (/ bw-src 2)))
                      (src-right   (+ cx-src bw-src))
                      (av-src-cont (abs-vl (ivl-cont r-src 0)))
-                     (av-tgt-top  (abs-vl (ivl-top-r r-tgt)))
-                     (av-tgt-bot  (abs-vl (ivl-bot-r r-tgt)))
-                     (av-src-top  (abs-vl (ivl-top-r r-src)))
-                     (av-src-bot  (abs-vl (ivl-bot-r r-src))))
+                     ;; Use actual box extents for ▼/▲ so they land in gap rows
+                     (src-pr-max  (let ((mx r-src))
+                                    (dolist (p (gethash src-id in-ports  '()))
+                                      (when (> (cdr p) mx) (setq mx (cdr p))))
+                                    (dolist (p (gethash src-id out-ports '()))
+                                      (when (> (cdr p) mx) (setq mx (cdr p))))
+                                    mx))
+                     (src-pr-min  (let ((mn r-src))
+                                    (dolist (p (gethash src-id in-ports  '()))
+                                      (when (< (cdr p) mn) (setq mn (cdr p))))
+                                    (dolist (p (gethash src-id out-ports '()))
+                                      (when (< (cdr p) mn) (setq mn (cdr p))))
+                                    mn))
+                     (tgt-pr-max  (let ((mx r-tgt))
+                                    (dolist (p (gethash tgt-id in-ports  '()))
+                                      (when (> (cdr p) mx) (setq mx (cdr p))))
+                                    (dolist (p (gethash tgt-id out-ports '()))
+                                      (when (> (cdr p) mx) (setq mx (cdr p))))
+                                    mx))
+                     (tgt-pr-min  (let ((mn r-tgt))
+                                    (dolist (p (gethash tgt-id in-ports  '()))
+                                      (when (< (cdr p) mn) (setq mn (cdr p))))
+                                    (dolist (p (gethash tgt-id out-ports '()))
+                                      (when (< (cdr p) mn) (setq mn (cdr p))))
+                                    mn))
+                     ;; av-* derived from actual pr-max/min for correct ▼/▲ placement
+                     (av-tgt-top  (abs-vl (ivl-top-r tgt-pr-min)))
+                     (av-tgt-bot  (abs-vl (ivl-bot-r tgt-pr-max)))
+                     (av-src-top  (abs-vl (ivl-top-r src-pr-min)))
+                     (av-src-bot  (abs-vl (ivl-bot-r src-pr-max))))
                 (cl-flet ((hfill (av x1 x2)
                             (dotimes (k (max 0 (- x2 x1)))
-                              (box-diagram--put cv av (+ x1 k) "\u2500"))))
+                              (box-diagram--put cv av (+ x1 k) "─"))))
                   (cond
-                   ;; tgt.t : signal flows DOWN from src (above) to tgt top
-                   ;;   natural when r-src < r-tgt
+                   ;; tgt.t : signal flows DOWN from src (above) to tgt top.
+                   ;;   ▼ placed in gap row just above tgt top border.
                    ((and (equal tgt-e "t") (< r-src r-tgt))
-                    (box-diagram--put cv av-tgt-top vc-tgt "\u25bc") ; ▼
+                    (box-diagram--put cv (1- av-tgt-top) vc-tgt "▼") ; ▼ in gap
                     (let ((r (1+ av-src-cont)))
-                      (while (< r av-tgt-top)
-                        (box-diagram--put cv r vc-tgt "\u2502") ; │
+                      (while (< r (1- av-tgt-top))
+                        (box-diagram--put cv r vc-tgt "│") ; │
                         (setq r (1+ r))))
-                    (box-diagram--put cv av-src-cont vc-tgt "\u2510") ; ┐
+                    (box-diagram--put cv av-src-cont vc-tgt "┐") ; ┐
                     (hfill av-src-cont src-right vc-tgt)
-                    (box-diagram--put cv av-src-cont (1- src-right) "\u251c")) ; ├
+                    (box-diagram--put cv av-src-cont (1- src-right) "├")) ; ├
 
-                   ;; tgt.b : signal flows UP from src (below) to tgt bottom
-                   ;;   natural when r-src > r-tgt
+                   ;; tgt.b : signal flows UP from src (below) to tgt bottom.
+                   ;;   ▲ placed in gap row just below tgt bottom border.
                    ((and (equal tgt-e "b") (> r-src r-tgt))
-                    (box-diagram--put cv av-tgt-bot vc-tgt "\u25b2") ; ▲
-                    (let ((r (1+ av-tgt-bot)))
+                    (box-diagram--put cv (1+ av-tgt-bot) vc-tgt "▲") ; ▲ in gap
+                    (let ((r (+ 2 av-tgt-bot)))
                       (while (< r av-src-cont)
-                        (box-diagram--put cv r vc-tgt "\u2502") ; │
+                        (box-diagram--put cv r vc-tgt "│") ; │
                         (setq r (1+ r))))
-                    (box-diagram--put cv av-src-cont vc-tgt "\u2518") ; ┘
+                    (box-diagram--put cv av-src-cont vc-tgt "┘") ; ┘
                     (hfill av-src-cont src-right vc-tgt)
-                    (box-diagram--put cv av-src-cont (1- src-right) "\u251c")) ; ├
+                    (box-diagram--put cv av-src-cont (1- src-right) "├")) ; ├
 
-                   ;; src.b : signal exits src bottom, flows DOWN to tgt (below)
-                   ;;   natural when r-src < r-tgt
+                   ;; src.b : signal exits src bottom, flows DOWN to tgt (below).
+                   ;;   ▼ placed in gap row just below src bottom border.
                    ((and (equal src-e "b") (< r-src r-tgt))
                     (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
                           (tgt-entry   (- cx-tgt 3)))
-                      (box-diagram--put cv av-src-bot vc-src "\u25bc") ; ▼
-                      (let ((r (1+ av-src-bot)))
+                      (box-diagram--put cv (1+ av-src-bot) vc-src "▼") ; ▼ in gap
+                      (let ((r (+ 2 av-src-bot)))
                         (while (< r av-tgt-cont)
-                          (box-diagram--put cv r vc-src "\u2502") ; │
+                          (box-diagram--put cv r vc-src "│") ; │
                           (setq r (1+ r))))
-                      (box-diagram--put cv av-tgt-cont vc-src "\u2514") ; └
+                      (box-diagram--put cv av-tgt-cont vc-src "└") ; └
                       (hfill av-tgt-cont (1+ vc-src) tgt-entry)
                       (box-diagram--put cv av-tgt-cont tgt-entry arrow)))
 
-                   ;; src.t : signal exits src top, flows UP to tgt (above)
-                   ;;   natural when r-src > r-tgt
+                   ;; src.t : signal exits src top, flows UP to tgt (above).
+                   ;;   ▲ placed in gap row just above src top border.
                    ((and (equal src-e "t") (> r-src r-tgt))
                     (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
                           (tgt-entry   (- cx-tgt 3)))
-                      (box-diagram--put cv av-src-top vc-src "\u25b2") ; ▲
+                      (box-diagram--put cv (1- av-src-top) vc-src "▲") ; ▲ in gap
                       (let ((r (1+ av-tgt-cont)))
-                        (while (< r av-src-top)
-                          (box-diagram--put cv r vc-src "\u2502") ; │
+                        (while (< r (1- av-src-top))
+                          (box-diagram--put cv r vc-src "│") ; │
                           (setq r (1+ r))))
-                      (box-diagram--put cv av-tgt-cont vc-src "\u250c") ; ┌
+                      (box-diagram--put cv av-tgt-cont vc-src "┌") ; ┌
                       (hfill av-tgt-cont (1+ vc-src) tgt-entry)
                       (box-diagram--put cv av-tgt-cont tgt-entry arrow)))))))))
 
