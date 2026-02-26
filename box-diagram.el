@@ -45,10 +45,11 @@
 ;;
 ;;   Dot-edge attributes on a node override the default left/right entry/exit:
 ;;
-;;     ID1 -> ID2.b    ; arrow from ID1 right to ID2 bottom  (▲ at bottom border)
-;;     ID1 -> ID2.t    ; arrow from ID1 right to ID2 top     (▼ at top border)
-;;     ID1.b -> ID2    ; arrow from ID1 bottom to ID2 left   (▼ at bottom border)
-;;     ID1.t -> ID2    ; arrow from ID1 top to ID2 left      (▲ at top border)
+;;     ID1 -> ID2.b    ; arrow from ID1 right to ID2 bottom  (▲ near ID2 bottom)
+;;     ID1 -> ID2.t    ; arrow from ID1 right to ID2 top     (▼ near ID2 top)
+;;     ID1.b -> ID2    ; arrow from ID1 bottom to ID2 left   (▼ near ID2 entry)
+;;     ID1.t -> ID2    ; arrow from ID1 top to ID2 left      (▲ near ID2 entry)
+;;   Triangle arrowheads are placed near the destination, not the source.
 ;;
 ;;   .l (left) and .r (right) are accepted but are equivalent to the defaults.
 ;;
@@ -675,13 +676,14 @@ Returns a list of strings."
                                        ((= i (1- n)) "\u2514")
                                        (t            "\u251c"))))
                         (box-diagram--put cv av bx ch)))
-                    ;; Vertical │ in canvas rows between consecutive port-rows
+                    ;; Vertical │ in canvas rows between consecutive port-rows.
+                    ;; Start right after the first content row (where ┬ was drawn)
+                    ;; so there is no gap in multi-height rows.
                     (let ((i 0))
                       (while (< i (1- n))
                         (let* ((pr0 (nth i       branch-prs))
                                (pr1 (nth (1+ i) branch-prs))
-                               (ivl-start (1+ (ivl-cont pr0
-                                                        (1- (aref row-heights pr0)))))
+                               (ivl-start (1+ (ivl-cont pr0 0)))
                                (ivl-end   (ivl-cont pr1 0)))
                           (let ((ivl ivl-start))
                             (while (< ivl ivl-end)
@@ -768,32 +770,32 @@ Returns a list of strings."
                     (box-diagram--put cv av-src-cont (1- src-right) "├")) ; ├
 
                    ;; src.b : signal exits src bottom, flows DOWN to tgt (below).
-                   ;;   ▼ placed in gap row just below src bottom border.
+                   ;;   │ descends from src bottom; ▼ placed just above └──► connection.
                    ((and (equal src-e "b") (< r-src r-tgt))
                     (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
                           (tgt-entry   (- cx-tgt 3)))
-                      (box-diagram--put cv (1+ av-src-bot) vc-src "▼") ; ▼ in gap
-                      (let ((r (+ 2 av-src-bot)))
-                        (while (< r av-tgt-cont)
+                      (let ((r (1+ av-src-bot)))
+                        (while (< r (1- av-tgt-cont))
                           (box-diagram--put cv r vc-src "│") ; │
                           (setq r (1+ r))))
+                      (box-diagram--put cv (1- av-tgt-cont) vc-src "▼") ; ▼ near destination
                       (box-diagram--put cv av-tgt-cont vc-src "└") ; └
                       (hfill av-tgt-cont (1+ vc-src) tgt-entry)
                       (box-diagram--put cv av-tgt-cont tgt-entry arrow)))
 
                    ;; src.t : signal exits src top, flows UP to tgt (above).
-                   ;;   ▲ placed in gap row just above src top border.
+                   ;;   ▲ placed just below ┌──► connection; │ fills remaining gap.
                    ((and (equal src-e "t") (> r-src r-tgt))
                     (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
                           (tgt-entry   (- cx-tgt 3)))
-                      (box-diagram--put cv (1- av-src-top) vc-src "▲") ; ▲ in gap
-                      (let ((r (1+ av-tgt-cont)))
-                        (while (< r (1- av-src-top))
-                          (box-diagram--put cv r vc-src "│") ; │
-                          (setq r (1+ r))))
                       (box-diagram--put cv av-tgt-cont vc-src "┌") ; ┌
                       (hfill av-tgt-cont (1+ vc-src) tgt-entry)
-                      (box-diagram--put cv av-tgt-cont tgt-entry arrow)))))))))
+                      (box-diagram--put cv av-tgt-cont tgt-entry arrow)
+                      (box-diagram--put cv (1+ av-tgt-cont) vc-src "▲") ; ▲ near destination
+                      (let ((r (+ 2 av-tgt-cont)))
+                        (while (< r (1- av-src-top))
+                          (box-diagram--put cv r vc-src "│") ; │
+                          (setq r (1+ r))))))))))))
 
         (box-diagram--canvas-to-lines cv)))))
 
