@@ -1,0 +1,13 @@
+;; Example 1: Simple chains - no module. Demonstrates: box, r-box, text.
+A := box("Alpha");
+B := box("Beta");
+C := box("Gamma");
+P := r-box("Round");
+Q := r-box("Arc");
+I1 := text("input1");
+O1 := text("output1");
+I2 := text("input2");
+O2 := text("output2");
+
+I1 -> A -> B -> C -> O1
+I2 -> P -> Q -> O2

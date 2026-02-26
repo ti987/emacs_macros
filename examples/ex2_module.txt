@@ -1,0 +1,17 @@
+;; Example 2: Module with multiple inner boxes and module-level connections.
+;; double-box("CPU", [A,B,C]) wraps A/B/C inside. Text nodes stay outside.
+A := box("ALU");
+B := box("REG");
+C := box("MEM");
+M := double-box("CPU", [A,B,C]);
+CLK := text("clk");
+RST := text("rst");
+DIN := text("data_in");
+DOUT := text("data_out");
+VOUT := text("valid");
+
+M
+CLK -> M
+RST -> M -> DOUT
+DIN -> A -> B -> C
+B -> VOUT

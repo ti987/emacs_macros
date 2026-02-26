@@ -1,0 +1,21 @@
+;; Example 5: All features combined.
+;; r-box (rounded corners), multi-line labels (\n), double-box module,
+;; module-level CLK connection, fan-out [text, inner], vertical .b arrow.
+SRC  := r-box("Read\nBuf");
+PROC := box("Process");
+FILT := box("Filter");
+OB   := box("Chan\nB");
+LOG  := r-box("Log");
+M    := double-box("Pipeline", [SRC,PROC,FILT,OB,LOG]);
+CLK  := text("clk");
+DIN  := text("data_in");
+DA   := text("stream_a");
+DB   := text("stream_b");
+DLOG := text("log_out");
+
+M
+CLK -> M
+DIN -> SRC -> PROC -> FILT -> [DA, OB]
+OB -> DB
+OB.b -> LOG
+LOG -> DLOG

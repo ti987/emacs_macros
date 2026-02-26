@@ -1,0 +1,17 @@
+;; Example 4: Vertical arrows via dot-edge attributes.
+;; SRC.b -> SIDE : arrow exits SRC bottom edge (▼), runs down, enters SIDE left.
+;; SIDE -> CONV.t : arrow from SIDE enters CONV top edge (▼ at CONV top).
+SRC := box("Source");
+MAIN := box("Main");
+SIDE := box("Side");
+CONV := box("Conv");
+M := double-box("VArrows", [SRC,MAIN,SIDE,CONV]);
+I := text("input");
+O1 := text("main_out");
+O2 := text("conv_out");
+
+M
+I -> SRC -> MAIN -> O1
+SRC.b -> SIDE
+SIDE -> CONV.t
+CONV -> O2
