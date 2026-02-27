@@ -229,10 +229,13 @@ BIDIR-SET is a hash (SRC-ID . TGT-ID) -> t for bidirectional edges (<->)."
   "Outer character width of a box: max line width + 4."
   (+ (apply #'max (mapcar #'length (box-diagram--label-lines label))) 4))
 
-(defun box-diagram--assign-rows (chains)
+(defun box-diagram--assign-rows (chains &optional cols inner-set)
   "Return a hash id->row-number.
 Each chain seeds its new nodes on the same row determined by the maximum
-row of any already-placed node in the chain plus 1, or the next free row."
+row of any already-placed node in the chain plus 1, or the next free row.
+When COLS (hash id->col) and INNER-SET (hash id->t) are provided, the base
+row is bumped until no already-placed inner node shares both the same column
+and the same row as any new inner node in this chain."
   (let ((rows (make-hash-table :test 'equal))
         (next 0))
     (dolist (chain chains)
@@ -241,8 +244,35 @@ row of any already-placed node in the chain plus 1, or the next free row."
           (when (gethash id rows)
             (setq has-placed t)
             (setq max-placed (max max-placed (gethash id rows)))))
-        (let ((base (if has-placed (1+ max-placed)
-                      (prog1 next (setq next (1+ next))))))
+        (let* ((candidate (if has-placed (1+ max-placed) next))
+               (base
+                (if (and has-placed cols inner-set)
+                    ;; Column-aware conflict avoidance: collect (col . row) pairs
+                    ;; for already-placed inner nodes not in the current chain.
+                    (let* ((placed-cr
+                            (let (ps)
+                              (maphash (lambda (k v)
+                                         (when (and (not (member k chain))
+                                                    (gethash k inner-set))
+                                           (push (cons (gethash k cols 0) v) ps)))
+                                       rows)
+                              ps))
+                           ;; Columns of new inner nodes we are about to place
+                           (new-cols
+                            (delq nil
+                                  (mapcar (lambda (id)
+                                            (when (and (not (gethash id rows))
+                                                       (gethash id inner-set))
+                                              (gethash id cols 0)))
+                                          chain)))
+                           (b candidate))
+                      (while (cl-some (lambda (c)
+                                        (member (cons c b) placed-cr))
+                                      new-cols)
+                        (setq b (1+ b)))
+                      b)
+                  candidate)))
+          (when (>= base next) (setq next (1+ base)))
           (dolist (id chain)
             (unless (gethash id rows) (puthash id base rows))))))
     rows))
@@ -274,7 +304,7 @@ CHAINS is the list of connection chains.
 ROWS is a hash id->row-number, modified in place.
 INNER-SET is a hash id->t of nodes rendered inside the double-box border.
 EDGE-ALIST maps (SRC-ID . TGT-ID) -> (SRC-EDGE . TGT-EDGE) for dot-edge attrs.
-Call this after `box-diagram--assign-rows', before `box-diagram--assign-cols'."
+Call this after `box-diagram--assign-rows' and `box-diagram--assign-cols'."
   (dolist (entry edge-alist)
     (let* ((key    (car entry))
            (src-id (car key))
@@ -406,10 +436,10 @@ Returns a list of strings."
          (title     (plist-get outer-def :label))
          (inner-set (let ((h (make-hash-table :test 'equal)))
                       (dolist (id inner-ids) (puthash id t h)) h))
-         (rows (let ((r (box-diagram--assign-rows chains)))
+         (cols (box-diagram--assign-cols chains inner-set))
+         (rows (let ((r (box-diagram--assign-rows chains cols inner-set)))
                  (box-diagram--bump-vertical-rows chains r inner-set edge-alist)
                  r))
-         (cols (box-diagram--assign-cols chains inner-set))
          (ports (box-diagram--collect-ports chains rows inner-set edge-alist))
          (in-ports  (car ports))
          (out-ports (cdr ports))
@@ -628,6 +658,11 @@ Returns a list of strings."
                                                  (gethash (cons (car p) id) bidir-set)))
                                           iports))
                        (in-arw  (if bidir-in box-diagram--bidir-arrow arrow))
+                       ;; Use │ instead of ├ when outgoing edge is bidir
+                       (bidir-out (cl-some (lambda (p)
+                                             (and (= (cdr p) pr)
+                                                  (gethash (cons id (car p)) bidir-set)))
+                                           oports))
                        (rh      (aref row-heights pr)))
                   (dotimes (l rh)
                     (let* ((av      (abs-vl (ivl-cont pr l)))
@@ -638,6 +673,7 @@ Returns a list of strings."
                                           (concat s (make-string (max 0 pad) ?\s)))
                                       (make-string (- bw 2) ?\s)))
                            (rch     (if (and has-out (= l 0)
+                                            (not bidir-out)
                                             (not (gethash (cons id pr)
                                                           secondary-branch-pts)))
                                         te vl)))

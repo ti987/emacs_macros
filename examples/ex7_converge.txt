@@ -1,0 +1,17 @@
+## ex7_converge.txt - multiple inputs converging on the same node
+## Tests that all 3 ADC->BRAM->OCL paths are drawn without overdrawing.
+B1:= box("BRAM1");
+B2:= box("BRAM2");
+B3:= box("BRAM3");
+OCL:= box("Optional\nCustom\nLogic");
+PROC:= box("Processor");
+ADC1:= text("ADC1");
+ADC3:= text("ADC3");
+ADC2:= text("ADC2");
+F:= double-box("FPGA",[B1,B2,B3,OCL,PROC]);
+
+F;
+ADC1->B1->OCL;
+ADC3->B3->OCL;
+ADC2->B2->OCL;
+OCL->PROC;
