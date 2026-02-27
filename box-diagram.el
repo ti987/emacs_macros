@@ -57,7 +57,19 @@
 ;;
 ;;   .l (left) and .r (right) are accepted but are equivalent to the defaults.
 ;;
-;;   Comments: anything following ## on a line is ignored.
+;;   Line-prefix stripping: lines whose first non-whitespace characters are
+;;   "//", "--", or a single "#" followed by whitespace or end-of-line (but
+;;   NOT "##") have that prefix removed before parsing.  This lets you embed
+;;   diagram expressions as comments in many programming languages:
+;;
+;;     // A := box("Input")       ← C/Java/JS comment
+;;     -- B := box("Output")      ← SQL / Haskell comment
+;;     # A -> B                   ← shell/Python single-# comment line
+;;
+;;   "##" is still the diagram's own comment marker; the rest of that line
+;;   is ignored entirely (not stripped and re-parsed).
+;;
+;;   In-line comments: anything following ## on a line is ignored.
 ;;
 ;;     A := box("Raster")  ## this is a comment
 ;;     I1 -> A -> B        ## another comment
@@ -71,12 +83,33 @@
 
 ;;; ---- Parsers ---------------------------------------------------------------
 
+(defun box-diagram--strip-line-prefix (line)
+  "Strip a language comment prefix from the start of LINE, if present.
+Strips leading '//', '--', or a single '#' (but NOT '##') so that diagram
+expressions can be embedded as comments in C/Java/JS, SQL/Haskell, or
+shell/Python source files.  Leading whitespace before the prefix is
+re-attached to the result so relative indentation is preserved.
+A single '#' is only stripped when followed by whitespace or end-of-line;
+this avoids accidentally consuming the first character of content."
+  ;; First, reject '##' explicitly (diagram's own comment marker).
+  ;; Then match '//', '--', or '#' followed by space/tab/EOL.
+  (if (string-match "^\\([ \t]*\\)\\(//\\|--\\|#\\)\\([ \t]\\|$\\)" line)
+      ;; group1=indent, group2=prefix, group3=space-after-prefix-or-empty
+      ;; '##' does NOT match: after consuming the first '#' as group 2,
+      ;; the second '#' is not [ \t] nor end-of-string, so group 3 fails
+      ;; and the entire match returns nil -- '##' lines pass through unchanged.
+      (let ((indent (match-string 1 line))
+            (after  (substring line (match-end 0))))
+        (concat indent after))
+    line))
+
 (defun box-diagram--parse-defs (text)
   "Return alist (ID . PLIST) from definition lines in TEXT.
 Plist keys: :type (box|double-box|text), :label, :children (double-box)."
   (let (defs)
     (dolist (line (split-string text "\n"))
-      (let ((line (replace-regexp-in-string "[ \t]*##.*$" "" line)))
+      (let ((line (replace-regexp-in-string "[ \t]*##.*$" ""
+                    (box-diagram--strip-line-prefix line))))
       (cond
        ((string-match
          "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*:=[ \t]*box(\"\\([^\"]+\\)\")" line)
@@ -131,7 +164,8 @@ BIDIR-SET is a hash (SRC-ID . TGT-ID) -> t for bidirectional edges (<->)."
         ;; Separator regex matches <->, -> or → (try <-> before -> so it wins).
         (sep-re "[ \t]*\\(<->\\|->\\|\u2192\\)[ \t]*"))
     (dolist (line (split-string text "\n"))
-      (let* ((line    (replace-regexp-in-string "[ \t]*##.*$" "" line))
+      (let* ((line    (replace-regexp-in-string "[ \t]*##.*$" ""
+                        (box-diagram--strip-line-prefix line)))
              (trimmed (string-trim line)))
         (when (and (> (length trimmed) 0)
                    (string-match-p "<->\\|->\\|\u2192" trimmed)
@@ -959,7 +993,8 @@ BIDIR-SET is a hash (SRC . TGT) -> t for bidirectional edges."
       ;; ## comments are stripped before the check.
       (let ((first-nl nil))
         (dolist (l (split-string conn-text "\n"))
-          (let ((l (replace-regexp-in-string "[ \t]*##.*$" "" l)))
+          (let ((l (replace-regexp-in-string "[ \t]*##.*$" ""
+                     (box-diagram--strip-line-prefix l))))
             (when (and (not first-nl) (> (length (string-trim l)) 0))
               (setq first-nl l))))
         (when (and first-nl
@@ -970,14 +1005,15 @@ BIDIR-SET is a hash (SRC . TGT) -> t for bidirectional edges."
               (setq outer-box def)
               (setq outer-id  id)
               ;; Remove the bare-ID line from conn-text.
-              ;; Strip ## comment and trailing ; before comparing.
+              ;; Strip line prefix, ## comment and trailing ; before comparing.
               (let ((removed nil) (new '()))
                 (dolist (l (split-string conn-text "\n"))
                   (if (and (not removed)
                            (string= (replace-regexp-in-string
                                      ";[ \t]*$" ""
                                      (string-trim
-                                      (replace-regexp-in-string "[ \t]*##.*$" "" l)))
+                                      (replace-regexp-in-string "[ \t]*##.*$" ""
+                                        (box-diagram--strip-line-prefix l))))
                                     id))
                       (setq removed t)
                     (push l new)))
