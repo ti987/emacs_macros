@@ -1,0 +1,10 @@
+## ex6_bidir.txt - bidirectional arrows and F; syntax
+A := box("Alpha");
+B := box("Beta");
+C := box("Gamma");
+I1 := text("input1");
+O1 := text("output1");
+M := double-box("Bidir Demo", [A,B,C]);
+
+M;                     ## trailing semicolon on the module line is accepted
+I1 -> A <-> B -> C -> O1

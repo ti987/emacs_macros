@@ -34,10 +34,14 @@
 ;;
 ;;   Unicode right-arrow (U+2192) may be used instead of ->.
 ;;
+;;   Bidirectional arrow <-> draws ◄─► (triangles at both ends):
+;;
+;;     ID1 <-> ID2
+;;
 ;;   The very first non-blank line of the connection section may be a bare
-;;   identifier naming a double-box container.  The graph-based renderer is
-;;   then used: each box appears exactly once; text nodes appear outside the
-;;   module border.
+;;   identifier naming a double-box container (trailing ; is allowed).  The
+;;   graph-based renderer is then used: each box appears exactly once; text
+;;   nodes appear outside the module border.
 ;;
 ;;   The double-box ID may also appear in chains for module-level connections:
 ;;
@@ -115,25 +119,34 @@ EDGE is one of \"b\" (bottom), \"t\" (top), \"l\" (left), \"r\" (right)."
       (cons s nil))))
 
 (defun box-diagram--parse-chains (text)
-  "Return (CHAINS BRANCH-GROUPS EDGE-ALIST) from TEXT.
+  "Return (CHAINS BRANCH-GROUPS EDGE-ALIST BIDIR-SET) from TEXT.
 CHAINS is a list of chains (lists of plain ID strings).  A final [A, B]
 segment is expanded into one chain per target.
 BRANCH-GROUPS is an alist (SOURCE-ID . (TARGET-ID ...)) for fan-outs.
 EDGE-ALIST is an alist ((SRC-ID . TGT-ID) . (SRC-EDGE . TGT-EDGE)) where
-each EDGE is nil or one of \"b\", \"t\", \"l\", \"r\" (see box-diagram--split-node)."
-  (let (chains branch-groups edge-alist)
+each EDGE is nil or one of \"b\", \"t\", \"l\", \"r\" (see box-diagram--split-node).
+BIDIR-SET is a hash (SRC-ID . TGT-ID) -> t for bidirectional edges (<->)."
+  (let ((chains nil) (branch-groups nil) (edge-alist nil)
+        (bidir-set (make-hash-table :test 'equal))
+        ;; Separator regex matches <->, -> or → (try <-> before -> so it wins).
+        (sep-re "[ \t]*\\(<->\\|->\\|\u2192\\)[ \t]*"))
     (dolist (line (split-string text "\n"))
       (let* ((line    (replace-regexp-in-string "[ \t]*##.*$" "" line))
              (trimmed (string-trim line)))
         (when (and (> (length trimmed) 0)
-                   (string-match-p "->\\|\u2192" trimmed)
+                   (string-match-p "<->\\|->\\|\u2192" trimmed)
                    (not (string-match-p ":=" trimmed)))
           (dolist (seg (split-string trimmed ";"))
             (let ((seg (string-trim seg)))
-              (when (string-match-p "->\\|\u2192" seg)
+              (when (string-match-p "<->\\|->\\|\u2192" seg)
                 (let* ((raw-parts (mapcar #'string-trim
-                                          (split-string seg
-                                                        "[ \t]*\\(->\\|\u2192\\)[ \t]*" t))))
+                                          (split-string seg sep-re t)))
+                       ;; Extract separators by rescanning the segment
+                       (seps (let ((ss nil) (scan seg))
+                               (while (string-match sep-re scan)
+                                 (push (match-string 1 scan) ss)
+                                 (setq scan (substring scan (match-end 0))))
+                               (nreverse ss))))
                   (when (cdr raw-parts)
                     (let* ((last-raw  (car (last raw-parts)))
                            (pfx-raw   (butlast raw-parts)))
@@ -189,14 +202,17 @@ each EDGE is nil or one of \"b\", \"t\", \"l\", \"r\" (see box-diagram--split-no
                           (push ids chains)
                           (let ((i 0))
                             (while (< i (1- (length ids)))
-                              (let ((fe (nth i edges))
-                                    (te (nth (1+ i) edges)))
+                              (let ((fe  (nth i edges))
+                                    (te  (nth (1+ i) edges))
+                                    (sep (nth i seps))
+                                    (f   (nth i ids))
+                                    (t_  (nth (1+ i) ids)))
                                 (when (or fe te)
-                                  (push (cons (cons (nth i ids) (nth (1+ i) ids))
-                                              (cons fe te))
-                                        edge-alist)))
+                                  (push (cons (cons f t_) (cons fe te)) edge-alist))
+                                (when (equal sep "<->")
+                                  (puthash (cons f t_) t bidir-set)))
                               (setq i (1+ i)))))))))))))))
-    (list (nreverse chains) branch-groups edge-alist)))
+    (list (nreverse chains) branch-groups edge-alist bidir-set)))
 
 ;;; ---- Graph-based layout (used when a double-box container is declared) ----
 
@@ -377,13 +393,14 @@ their normal horizontal port suppressed; they are rendered as vertical arrows."
 
 ;;; ---- Graph renderer --------------------------------------------------------
 
-(defun box-diagram--render-graph (chains defs outer-def mod-ins mod-outs branch-groups edge-alist)
+(defun box-diagram--render-graph (chains defs outer-def mod-ins mod-outs branch-groups edge-alist bidir-set)
   "Render diagram using graph-based layout.
 CHAINS/DEFS describe the inner topology.
 OUTER-DEF is the double-box plist (:label :children).
 MOD-INS / MOD-OUTS are lists of IDs for module-level border connections.
 BRANCH-GROUPS is alist (SOURCE . (TARGET ...)) for bracket fan-out groups.
 EDGE-ALIST is alist ((SRC . TGT) . (SRC-EDGE . TGT-EDGE)) for dot-edge attrs.
+BIDIR-SET is a hash (SRC . TGT) -> t for bidirectional edges (<->).
 Returns a list of strings."
   (let* ((inner-ids (plist-get outer-def :children))
          (title     (plist-get outer-def :label))
@@ -605,6 +622,12 @@ Returns a list of strings."
                                  oports))
                        (has-out (or out-int out-ext))
                        (has-in  (cl-some (lambda (p) (= (cdr p) pr)) iports))
+                       ;; Use ◄─► if any in-source at this pr has a bidir edge
+                       (bidir-in (cl-some (lambda (p)
+                                            (and (= (cdr p) pr)
+                                                 (gethash (cons (car p) id) bidir-set)))
+                                          iports))
+                       (in-arw  (if bidir-in box-diagram--bidir-arrow arrow))
                        (rh      (aref row-heights pr)))
                   (dotimes (l rh)
                     (let* ((av      (abs-vl (ivl-cont pr l)))
@@ -621,7 +644,7 @@ Returns a list of strings."
                       (box-diagram--put cv av cx (concat vl inner rch))
                       (when (= l 0)
                         (when has-in
-                          (box-diagram--put cv av (- cx 3) arrow))
+                          (box-diagram--put cv av (- cx 3) in-arw))
                         (when out-int
                           (box-diagram--put cv av (+ cx bw) arrow))
                         (when out-ext
@@ -824,7 +847,11 @@ Returns a list of strings."
 
 (defconst box-diagram--arrow
   (concat (make-string 2 ?\u2500) "\u25ba")
-  "Arrow drawn between nodes in the simple renderer.")
+  "Unidirectional arrow: ──►")
+
+(defconst box-diagram--bidir-arrow
+  (concat "\u25c4" "\u2500" "\u25ba")
+  "Bidirectional arrow: ◄─►  (same width as box-diagram--arrow).")
 
 (defun box-diagram--node-triplet (node defs rendered)
   "Return (TOP MID BOT) for NODE in the simple chain renderer."
@@ -854,16 +881,22 @@ Returns a list of strings."
      (t (list (box-diagram--spaces (length base)) base
               (box-diagram--spaces (length base)))))))
 
-(defun box-diagram--render-chain (chain defs rendered)
-  "Render CHAIN into (TOP MID BOT) using the simple renderer."
+(defun box-diagram--render-chain (chain defs rendered &optional bidir-set)
+  "Render CHAIN into (TOP MID BOT) using the simple renderer.
+BIDIR-SET is a hash (SRC . TGT) -> t for bidirectional edges."
   (let ((top "") (mid "") (bot "")
-        (aw (length box-diagram--arrow)) (first t))
+        (aw (length box-diagram--arrow)) (first t) (prev nil))
     (dolist (node chain)
       (unless first
-        (setq top (concat top (box-diagram--spaces aw)))
-        (setq mid (concat mid box-diagram--arrow))
-        (setq bot (concat bot (box-diagram--spaces aw))))
+        (let ((arw (if (and bidir-set
+                            (gethash (cons prev node) bidir-set))
+                       box-diagram--bidir-arrow
+                     box-diagram--arrow)))
+          (setq top (concat top (box-diagram--spaces aw)))
+          (setq mid (concat mid arw))
+          (setq bot (concat bot (box-diagram--spaces aw)))))
       (setq first nil)
+      (setq prev node)
       (let ((trip (box-diagram--node-triplet node defs rendered)))
         (setq top (concat top (nth 0 trip)))
         (setq mid (concat mid (nth 1 trip)))
@@ -885,22 +918,31 @@ Returns a list of strings."
            (defs      (box-diagram--parse-defs def-text))
            (outer-box nil)
            (outer-id  nil))
-      ;; Detect optional bare double-box ID on first non-blank connection line
+      ;; Detect optional bare double-box ID on first non-blank connection line.
+      ;; A trailing semicolon is accepted (e.g. "F;" is treated like "F").
+      ;; ## comments are stripped before the check.
       (let ((first-nl nil))
         (dolist (l (split-string conn-text "\n"))
-          (when (and (not first-nl) (> (length (string-trim l)) 0))
-            (setq first-nl l)))
+          (let ((l (replace-regexp-in-string "[ \t]*##.*$" "" l)))
+            (when (and (not first-nl) (> (length (string-trim l)) 0))
+              (setq first-nl l))))
         (when (and first-nl
-                   (string-match "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*$" first-nl))
+                   (string-match "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*;?[ \t]*$" first-nl))
           (let* ((id  (match-string 1 first-nl))
                  (def (cdr (assoc id defs))))
             (when (and def (eq (plist-get def :type) 'double-box))
               (setq outer-box def)
               (setq outer-id  id)
-              ;; Remove the bare-ID line from conn-text
+              ;; Remove the bare-ID line from conn-text.
+              ;; Strip ## comment and trailing ; before comparing.
               (let ((removed nil) (new '()))
                 (dolist (l (split-string conn-text "\n"))
-                  (if (and (not removed) (string= (string-trim l) id))
+                  (if (and (not removed)
+                           (string= (replace-regexp-in-string
+                                     ";[ \t]*$" ""
+                                     (string-trim
+                                      (replace-regexp-in-string "[ \t]*##.*$" "" l)))
+                                    id))
                       (setq removed t)
                     (push l new)))
                 (setq conn-text (mapconcat #'identity (nreverse new) "\n")))))))
@@ -908,7 +950,8 @@ Returns a list of strings."
       (let* ((parsed        (box-diagram--parse-chains conn-text))
              (all-chains    (nth 0 parsed))
              (branch-groups (nth 1 parsed))
-             (edge-alist    (nth 2 parsed)))
+             (edge-alist    (nth 2 parsed))
+             (bidir-set     (nth 3 parsed)))
         (if outer-box
             ;; Split chains: those touching outer-id go to mod-ins/mod-outs;
             ;; the rest are inner chains for graph layout.
@@ -926,12 +969,12 @@ Returns a list of strings."
                     (push chain inner-chains))))
               (box-diagram--render-graph
                (nreverse inner-chains) defs outer-box
-               (nreverse mod-ins) (nreverse mod-outs) branch-groups edge-alist))
+               (nreverse mod-ins) (nreverse mod-outs) branch-groups edge-alist bidir-set))
           ;; Simple chain-by-chain fallback (no double-box)
           (let ((rendered (make-hash-table :test 'equal)) (output '()))
             (dolist (chain all-chains)
               (when output (push "" output))
-              (let ((trip (box-diagram--render-chain chain defs rendered)))
+              (let ((trip (box-diagram--render-chain chain defs rendered bidir-set)))
                 (push (nth 0 trip) output)
                 (push (nth 1 trip) output)
                 (push (nth 2 trip) output)))
