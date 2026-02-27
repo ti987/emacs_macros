@@ -14,8 +14,8 @@ DB   := text("stream_b");
 DLOG := text("log_out");
 
 M
-CLK -> M
-DIN -> SRC -> PROC -> FILT -> [DA, OB]
+CLK -> M                          ## module-level: arrow ends at left wall
+DIN -> SRC -> PROC -> FILT -> [DA, OB]  ## fan-out to two targets
 OB -> DB
-OB.b -> LOG
+OB.b -> LOG                       ## vertical: exits OB bottom, enters LOG left
 LOG -> DLOG

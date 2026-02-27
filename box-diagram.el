@@ -53,6 +53,11 @@
 ;;
 ;;   .l (left) and .r (right) are accepted but are equivalent to the defaults.
 ;;
+;;   Comments: anything following ## on a line is ignored.
+;;
+;;     A := box("Raster")  ## this is a comment
+;;     I1 -> A -> B        ## another comment
+;;
 ;; Usage:
 ;;   M-x box-diagram-render        - render the current buffer
 ;;   M-x box-diagram-render-region - render the selected region
@@ -67,6 +72,7 @@
 Plist keys: :type (box|double-box|text), :label, :children (double-box)."
   (let (defs)
     (dolist (line (split-string text "\n"))
+      (let ((line (replace-regexp-in-string "[ \t]*##.*$" "" line)))
       (cond
        ((string-match
          "^[ \t]*\\([A-Za-z0-9_]+\\)[ \t]*:=[ \t]*box(\"\\([^\"]+\\)\")" line)
@@ -97,7 +103,7 @@ Plist keys: :type (box|double-box|text), :label, :children (double-box)."
                                         (let ((s (string-trim s)))
                                           (when (string-match "^[A-Za-z0-9_]+$" s) s)))
                                       (split-string (match-string 1 rest) ","))))))
-          (push (cons id (list :type 'double-box :label label :children kids)) defs)))))
+          (push (cons id (list :type 'double-box :label label :children kids)) defs))))))
     (nreverse defs)))
 
 (defun box-diagram--split-node (s)
@@ -117,7 +123,8 @@ EDGE-ALIST is an alist ((SRC-ID . TGT-ID) . (SRC-EDGE . TGT-EDGE)) where
 each EDGE is nil or one of \"b\", \"t\", \"l\", \"r\" (see box-diagram--split-node)."
   (let (chains branch-groups edge-alist)
     (dolist (line (split-string text "\n"))
-      (let ((trimmed (string-trim line)))
+      (let* ((line    (replace-regexp-in-string "[ \t]*##.*$" "" line))
+             (trimmed (string-trim line)))
         (when (and (> (length trimmed) 0)
                    (string-match-p "->\\|\u2192" trimmed)
                    (not (string-match-p ":=" trimmed)))
@@ -770,30 +777,28 @@ Returns a list of strings."
                     (box-diagram--put cv av-src-cont (1- src-right) "├")) ; ├
 
                    ;; src.b : signal exits src bottom, flows DOWN to tgt (below).
-                   ;;   │ descends from src bottom; ▼ placed just above └──► connection.
+                   ;;   │ descends from src bottom all the way to └──► (no extra ▼).
                    ((and (equal src-e "b") (< r-src r-tgt))
                     (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
                           (tgt-entry   (- cx-tgt 3)))
                       (let ((r (1+ av-src-bot)))
-                        (while (< r (1- av-tgt-cont))
+                        (while (< r av-tgt-cont)
                           (box-diagram--put cv r vc-src "│") ; │
                           (setq r (1+ r))))
-                      (box-diagram--put cv (1- av-tgt-cont) vc-src "▼") ; ▼ near destination
                       (box-diagram--put cv av-tgt-cont vc-src "└") ; └
                       (hfill av-tgt-cont (1+ vc-src) tgt-entry)
                       (box-diagram--put cv av-tgt-cont tgt-entry arrow)))
 
                    ;; src.t : signal exits src top, flows UP to tgt (above).
-                   ;;   ▲ placed just below ┌──► connection; │ fills remaining gap.
+                   ;;   │ fills gap below ┌──► connection (no extra ▲).
                    ((and (equal src-e "t") (> r-src r-tgt))
                     (let ((av-tgt-cont (abs-vl (ivl-cont r-tgt 0)))
                           (tgt-entry   (- cx-tgt 3)))
                       (box-diagram--put cv av-tgt-cont vc-src "┌") ; ┌
                       (hfill av-tgt-cont (1+ vc-src) tgt-entry)
                       (box-diagram--put cv av-tgt-cont tgt-entry arrow)
-                      (box-diagram--put cv (1+ av-tgt-cont) vc-src "▲") ; ▲ near destination
-                      (let ((r (+ 2 av-tgt-cont)))
-                        (while (< r (1- av-src-top))
+                      (let ((r (1+ av-tgt-cont)))
+                        (while (< r av-src-top)
                           (box-diagram--put cv r vc-src "│") ; │
                           (setq r (1+ r))))))))))))
 
