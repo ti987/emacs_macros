@@ -277,13 +277,15 @@ Call this after `box-diagram--assign-rows', before `box-diagram--assign-cols'."
                        (t_  (cadr rest))
                        (ee  (cdr (cl-assoc (cons f t_) edge-alist :test #'equal)))
                        (fe  (car ee)))
-                  ;; Horizontal exits from src (fe not b/t)
+                  ;; Horizontal exits from src (fe not b/t, target must be inner)
                   (when (and (equal f src-id)
+                             (gethash t_ inner-set)
                              (not (member fe '("b" "t"))))
                     (let ((pr (max (gethash f rows 0) (gethash t_ rows 0))))
                       (when (> pr src-max-pr) (setq src-max-pr pr))))
-                  ;; Any connection into src counts for its port-row
-                  (when (equal t_ src-id)
+                  ;; Any inner-node connection into src counts for its port-row
+                  (when (and (equal t_ src-id)
+                             (gethash f inner-set))
                     (let ((pr (max (gethash f rows 0) (gethash t_ rows 0))))
                       (when (> pr src-max-pr) (setq src-max-pr pr)))))
                 (setq rest (cdr rest)))))
@@ -301,7 +303,8 @@ Call this after `box-diagram--assign-rows', before `box-diagram--assign-cols'."
 
 (defun box-diagram--collect-ports (chains rows inner-set &optional edge-alist)
   "Return (IN-PORTS . OUT-PORTS) where each is a hash id->list of (peer . port-row).
-Port-row for edge (f->t) = max(row[f], row[t]).
+Port-row for edge (f->t): max(row[f], row[t]) when both are inner nodes;
+the inner node's own row when one endpoint is a text (non-inner) node.
 Connections whose entry in EDGE-ALIST carries a .b or .t edge qualifier have
 their normal horizontal port suppressed; they are rendered as vertical arrows."
   (let ((in-p  (make-hash-table :test 'equal))
@@ -317,7 +320,13 @@ their normal horizontal port suppressed; they are rendered as vertical arrows."
                  ;; Suppress horizontal port for top/bottom edge qualifiers
                  (skip-out (member f-e '("b" "t")))
                  (skip-in  (member t-e '("b" "t")))
-                 (pr   (max (gethash f rows 0) (gethash t_ rows 0))))
+                 ;; Port-row: use inner-node's own row when one endpoint is text
+                 (pr (cond
+                       ((and (gethash f inner-set) (gethash t_ inner-set))
+                        (max (gethash f rows 0) (gethash t_ rows 0)))
+                       ((gethash f inner-set) (gethash f rows 0))
+                       ((gethash t_ inner-set) (gethash t_ rows 0))
+                       (t 0))))
             (unless skip-out
               (let ((cur (gethash f out-p '())))
                 (unless (assoc t_ cur)
@@ -407,9 +416,9 @@ Returns a list of strings."
                 (when (> w (aref v c)) (aset v c w))))
             v))
          (num-rows
-          (let ((seen (make-hash-table :test 'eql)))
-            (maphash (lambda (_ v) (puthash v t seen)) rows)
-            (max 1 (hash-table-count seen))))
+          (if inner-order
+              (1+ (apply #'max (mapcar (lambda (id) (gethash id rows 0)) inner-order)))
+            1))
          ;; Outside-left/right maps: port-row -> outside-node-id
          (oleft  (make-hash-table :test 'eql))
          (oright (make-hash-table :test 'eql))
@@ -421,7 +430,10 @@ Returns a list of strings."
       (let ((rest chain))
         (while (cdr rest)
           (let* ((f  (car rest)) (t_ (cadr rest))
-                 (pr (max (gethash f rows 0) (gethash t_ rows 0))))
+                 ;; Use inner-node's own row when one side is a text node
+                 (pr (if (gethash f inner-set)
+                         (gethash f rows 0)
+                       (gethash t_ rows 0))))
             (when (and (not (gethash f inner-set)) (gethash t_ inner-set))
               (puthash pr f oleft))
             (when (and (gethash f inner-set) (not (gethash t_ inner-set)))
