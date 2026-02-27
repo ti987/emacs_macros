@@ -58,18 +58,16 @@
 ;;   .l (left) and .r (right) are accepted but are equivalent to the defaults.
 ;;
 ;;   Line-prefix stripping: lines whose first non-whitespace characters are
-;;   "//", "--", or a single "#" followed by whitespace or end-of-line (but
-;;   NOT "##") have that prefix removed before parsing.  This lets you embed
-;;   diagram expressions as comments in many programming languages:
+;;   "//", "--", "##", or a single "#" followed by whitespace or end-of-line
+;;   have that prefix removed before parsing.  This lets you embed diagram
+;;   expressions as comments in many programming languages:
 ;;
 ;;     // A := box("Input")       ← C/Java/JS comment
 ;;     -- B := box("Output")      ← SQL / Haskell comment
 ;;     # A -> B                   ← shell/Python single-# comment line
+;;     ## C := box("Node")        ← Python-style double-# comment line
 ;;
-;;   "##" is still the diagram's own comment marker; the rest of that line
-;;   is ignored entirely (not stripped and re-parsed).
-;;
-;;   In-line comments: anything following ## on a line is ignored.
+;;   In-line comments: anything following ## on a line is also ignored.
 ;;
 ;;     A := box("Raster")  ## this is a comment
 ;;     I1 -> A -> B        ## another comment
@@ -85,19 +83,16 @@
 
 (defun box-diagram--strip-line-prefix (line)
   "Strip a language comment prefix from the start of LINE, if present.
-Strips leading '//', '--', or a single '#' (but NOT '##') so that diagram
-expressions can be embedded as comments in C/Java/JS, SQL/Haskell, or
-shell/Python source files.  Leading whitespace before the prefix is
-re-attached to the result so relative indentation is preserved.
+Strips leading '//', '--', '##', or a single '#' so that diagram
+expressions can be embedded as comments in many programming languages.
+Leading whitespace before the prefix is re-attached to the result so
+relative indentation is preserved.
 A single '#' is only stripped when followed by whitespace or end-of-line;
-this avoids accidentally consuming the first character of content."
-  ;; First, reject '##' explicitly (diagram's own comment marker).
-  ;; Then match '//', '--', or '#' followed by space/tab/EOL.
-  (if (string-match "^\\([ \t]*\\)\\(//\\|--\\|#\\)\\([ \t]\\|$\\)" line)
+'##' is listed before '#' in the alternation so it is always preferred."
+  ;; Match '//', '--', '##', or '#' (tried in order; '##' before '#').
+  ;; Each prefix must be followed by whitespace or end-of-line.
+  (if (string-match "^\\([ \t]*\\)\\(//\\|--\\|##\\|#\\)\\([ \t]\\|$\\)" line)
       ;; group1=indent, group2=prefix, group3=space-after-prefix-or-empty
-      ;; '##' does NOT match: after consuming the first '#' as group 2,
-      ;; the second '#' is not [ \t] nor end-of-string, so group 3 fails
-      ;; and the entire match returns nil -- '##' lines pass through unchanged.
       (let ((indent (match-string 1 line))
             (after  (substring line (match-end 0))))
         (concat indent after))

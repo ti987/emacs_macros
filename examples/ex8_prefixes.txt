@@ -1,12 +1,12 @@
 ;; Example 8: Line-prefix stripping.
 ;; Diagram expressions can be written as comments in various languages.
-;; Leading //, --, or # (single, followed by whitespace) are stripped.
-;; ## remains the diagram's own end-of-line comment marker.
+;; Leading //, --, ## or # (followed by whitespace) are stripped.
+;; ## inline: anything following ## on a line is also stripped.
 
 // A := box("Input")
 // B := r-box("Process")
 // C := box("Output")
 -- D := text("Source")
--- E := text("Sink")
+## E := text("Sink")   ## E is text, ## is prefix here too
 
 // D -> A -> B -> C -> E
