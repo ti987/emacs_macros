@@ -68,13 +68,18 @@
 ;;     I1 -> A -> B        ## inline comment after chain
 ;;
 ;;   Line-prefix stripping: lines whose first non-whitespace characters are
-;;   "//", "--", or a single "#" followed by whitespace or end-of-line
-;;   have that prefix removed before parsing.  This lets you embed diagram
-;;   expressions as comments in many programming languages:
+;;   "//", "--", or a single "#" (but NOT "##") have that prefix removed
+;;   before parsing.  No trailing space after the prefix is required.  This
+;;   lets you embed diagram expressions as comments in many programming
+;;   languages:
 ;;
-;;     // A := box("Input")       ← C/Java/JS comment
+;;     //A := box("Input")        ← C/Java/JS comment (no space needed)
 ;;     -- B := box("Output")      ← SQL / Haskell comment
-;;     # A -> B                   ← shell/Python single-# comment line
+;;     #A -> B                    ← shell/Python single-# comment line
+;;
+;;   A line containing only "//", "--", or "#" (optionally with whitespace)
+;;   is treated as a blank separator between the definition section and the
+;;   connection section, just like an empty line.
 ;;
 ;; Usage:
 ;;   M-x box-diagram-render        - render the current buffer
@@ -87,22 +92,23 @@
 
 (defun box-diagram--strip-line-prefix (line)
   "Strip a language comment prefix from the start of LINE, if present.
-Strips leading '//', '--', or a single '#' so that diagram
+Strips leading '//', '--', or a single '#' (but NOT '##') so that diagram
 expressions can be embedded as comments in many programming languages.
+No trailing space after the prefix is required.
 Leading whitespace before the prefix is re-attached to the result so
 relative indentation is preserved.
-A single '#' is only stripped when followed by whitespace or end-of-line
-to avoid accidentally stripping '##' (the box-diagram comment marker)."
-  ;; Match '//', '--', or '#' (single; NOT '##' — that is handled by the
-  ;; inline-comment stripper and treated as box-diagram comment syntax).
-  ;; The '#' alternative requires at least one whitespace or end-of-line
-  ;; after it so that '##...' is NOT matched here.
-  (if (string-match "^\\([ \t]*\\)\\(//\\|--\\|#\\)\\([ \t]\\|$\\)" line)
-      ;; group1=indent, group2=prefix, group3=space-after-prefix-or-empty
-      (let ((indent (match-string 1 line))
-            (after  (substring line (match-end 0))))
-        (concat indent after))
-    line))
+'##' is intentionally NOT stripped here — it is the box-diagram comment
+marker and is handled by the inline-comment stripper."
+  (cond
+   ;; '//' or '--': strip the two-char prefix unconditionally.
+   ((string-match "^\\([ \t]*\\)\\(//\\|--\\)" line)
+    (concat (match-string 1 line) (substring line (match-end 2))))
+   ;; '#' but NOT '##': strip the single '#'; preserve what follows it.
+   ;; When '##' is present, [^#] fails on the second '#' and $ fails
+   ;; (not end-of-string), so the match fails and line is returned as-is.
+   ((string-match "^\\([ \t]*\\)#\\([^#]\\|$\\)" line)
+    (concat (match-string 1 line) (substring line (match-beginning 2))))
+   (t line)))
 
 (defun box-diagram--parse-defs (text)
   "Return alist (ID . PLIST) from definition lines in TEXT.
@@ -982,7 +988,10 @@ BIDIR-SET is a hash (SRC . TGT) -> t for bidirectional edges."
          (def-lines  '()) (conn-lines '()) (in-conn nil))
     (dolist (line all-lines)
       (if in-conn (push line conn-lines)
-        (if (string-match-p "^[ \t]*$" line) (setq in-conn t)
+        (if (string-match-p "^[ \t]*$"
+              (replace-regexp-in-string "##.*$" ""
+                (box-diagram--strip-line-prefix line)))
+            (setq in-conn t)
           (push line def-lines))))
     (let* ((def-text  (mapconcat #'identity (nreverse def-lines)  "\n"))
            (conn-text (mapconcat #'identity (nreverse conn-lines) "\n"))
