@@ -1,5 +1,5 @@
-;; Example 2: Module with multiple inner boxes and module-level connections.
-;; double-box("CPU", [A,B,C]) wraps A/B/C inside. Text nodes stay outside.
+## Example 2: Module with multiple inner boxes and module-level connections.
+## double-box("CPU", [A,B,C]) wraps A/B/C inside. Text nodes stay outside.
 A := box("ALU");
 B := box("REG");
 C := box("MEM");

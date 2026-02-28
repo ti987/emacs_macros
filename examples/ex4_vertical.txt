@@ -1,6 +1,6 @@
-;; Example 4: Vertical arrows via dot-edge attributes.
-;; SRC.b -> SIDE : arrow exits SRC bottom edge, runs down, enters SIDE left.
-;; SIDE -> CONV.t : arrow from SIDE enters CONV top edge (▼ at CONV top).
+## Example 4: Vertical arrows via dot-edge attributes.
+## SRC.b -> SIDE : arrow exits SRC bottom edge, runs down, enters SIDE left.
+## SIDE -> CONV.t : arrow from SIDE enters CONV top edge (▼ at CONV top).
 SRC := box("Source");
 MAIN := box("Main");
 SIDE := box("Side");

@@ -1,6 +1,6 @@
-;; Example 3: Fan-out using bracket groups.
-;; S -> [OA, D]: text target first (branch ┬), inner box second (branch └──►).
-;; D -> OB: inner box then has its own external output.
+## Example 3: Fan-out using bracket groups.
+## S -> [OA, D]: text target first (branch ┬), inner box second (branch └──►).
+## D -> OB: inner box then has its own external output.
 S := box("Source");
 D := box("Dest");
 M := double-box("Fanout", [S,D]);

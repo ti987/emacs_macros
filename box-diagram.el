@@ -57,20 +57,24 @@
 ;;
 ;;   .l (left) and .r (right) are accepted but are equivalent to the defaults.
 ;;
+;;   Comments: anything following ## (with or without a space) to the end of
+;;   a line is treated as a comment and ignored.  A line that starts with ##
+;;   is treated as a whole-line comment (the line is ignored entirely).
+;;   Blank lines (empty or only whitespace after comment stripping) are also
+;;   ignored.
+;;
+;;     ## This whole line is a comment.
+;;     A := box("Raster")  ## inline comment after definition
+;;     I1 -> A -> B        ## inline comment after chain
+;;
 ;;   Line-prefix stripping: lines whose first non-whitespace characters are
-;;   "//", "--", "##", or a single "#" followed by whitespace or end-of-line
+;;   "//", "--", or a single "#" followed by whitespace or end-of-line
 ;;   have that prefix removed before parsing.  This lets you embed diagram
 ;;   expressions as comments in many programming languages:
 ;;
 ;;     // A := box("Input")       ← C/Java/JS comment
 ;;     -- B := box("Output")      ← SQL / Haskell comment
 ;;     # A -> B                   ← shell/Python single-# comment line
-;;     ## C := box("Node")        ← Python-style double-# comment line
-;;
-;;   In-line comments: anything following ## on a line is also ignored.
-;;
-;;     A := box("Raster")  ## this is a comment
-;;     I1 -> A -> B        ## another comment
 ;;
 ;; Usage:
 ;;   M-x box-diagram-render        - render the current buffer
@@ -83,15 +87,17 @@
 
 (defun box-diagram--strip-line-prefix (line)
   "Strip a language comment prefix from the start of LINE, if present.
-Strips leading '//', '--', '##', or a single '#' so that diagram
+Strips leading '//', '--', or a single '#' so that diagram
 expressions can be embedded as comments in many programming languages.
 Leading whitespace before the prefix is re-attached to the result so
 relative indentation is preserved.
-A single '#' is only stripped when followed by whitespace or end-of-line;
-'##' is listed before '#' in the alternation so it is always preferred."
-  ;; Match '//', '--', '##', or '#' (tried in order; '##' before '#').
-  ;; Each prefix must be followed by whitespace or end-of-line.
-  (if (string-match "^\\([ \t]*\\)\\(//\\|--\\|##\\|#\\)\\([ \t]\\|$\\)" line)
+A single '#' is only stripped when followed by whitespace or end-of-line
+to avoid accidentally stripping '##' (the box-diagram comment marker)."
+  ;; Match '//', '--', or '#' (single; NOT '##' — that is handled by the
+  ;; inline-comment stripper and treated as box-diagram comment syntax).
+  ;; The '#' alternative requires at least one whitespace or end-of-line
+  ;; after it so that '##...' is NOT matched here.
+  (if (string-match "^\\([ \t]*\\)\\(//\\|--\\|#\\)\\([ \t]\\|$\\)" line)
       ;; group1=indent, group2=prefix, group3=space-after-prefix-or-empty
       (let ((indent (match-string 1 line))
             (after  (substring line (match-end 0))))
@@ -103,7 +109,7 @@ A single '#' is only stripped when followed by whitespace or end-of-line;
 Plist keys: :type (box|double-box|text), :label, :children (double-box)."
   (let (defs)
     (dolist (line (split-string text "\n"))
-      (let ((line (replace-regexp-in-string "[ \t]*##.*$" ""
+      (let ((line (replace-regexp-in-string "##.*$" ""
                     (box-diagram--strip-line-prefix line))))
       (cond
        ((string-match
@@ -159,7 +165,7 @@ BIDIR-SET is a hash (SRC-ID . TGT-ID) -> t for bidirectional edges (<->)."
         ;; Separator regex matches <->, -> or → (try <-> before -> so it wins).
         (sep-re "[ \t]*\\(<->\\|->\\|\u2192\\)[ \t]*"))
     (dolist (line (split-string text "\n"))
-      (let* ((line    (replace-regexp-in-string "[ \t]*##.*$" ""
+      (let* ((line    (replace-regexp-in-string "##.*$" ""
                         (box-diagram--strip-line-prefix line)))
              (trimmed (string-trim line)))
         (when (and (> (length trimmed) 0)
@@ -988,7 +994,7 @@ BIDIR-SET is a hash (SRC . TGT) -> t for bidirectional edges."
       ;; ## comments are stripped before the check.
       (let ((first-nl nil))
         (dolist (l (split-string conn-text "\n"))
-          (let ((l (replace-regexp-in-string "[ \t]*##.*$" ""
+          (let ((l (replace-regexp-in-string "##.*$" ""
                      (box-diagram--strip-line-prefix l))))
             (when (and (not first-nl) (> (length (string-trim l)) 0))
               (setq first-nl l))))
@@ -1000,14 +1006,14 @@ BIDIR-SET is a hash (SRC . TGT) -> t for bidirectional edges."
               (setq outer-box def)
               (setq outer-id  id)
               ;; Remove the bare-ID line from conn-text.
-              ;; Strip line prefix, ## comment and trailing ; before comparing.
+              ;; Strip line prefix, ## comment, and trailing ; before comparing.
               (let ((removed nil) (new '()))
                 (dolist (l (split-string conn-text "\n"))
                   (if (and (not removed)
                            (string= (replace-regexp-in-string
                                      ";[ \t]*$" ""
                                      (string-trim
-                                      (replace-regexp-in-string "[ \t]*##.*$" ""
+                                      (replace-regexp-in-string "##.*$" ""
                                         (box-diagram--strip-line-prefix l))))
                                     id))
                       (setq removed t)

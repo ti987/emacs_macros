@@ -1,4 +1,4 @@
-;; Example 1: Simple chains - no module. Demonstrates: box, r-box, text.
+## Example 1: Simple chains - no module. Demonstrates: box, r-box, text.
 A := box("Alpha");
 B := box("Beta");
 C := box("Gamma");
