@@ -4,6 +4,19 @@
 
 
 
+(defun my-highlight-groups-from-right (beg end face chunk-size)
+  "Apply FACE to odd-indexed chunks of CHUNK-SIZE chars from BEG to END.
+Chunks are indexed from the right starting at 0.
+Odd-indexed chunks (1, 3, 5, ...) get FACE; even-indexed chunks are unchanged."
+  (let ((pos end)
+        (group-idx 0))
+    (while (> pos beg)
+      (let ((chunk-start (max beg (- pos chunk-size))))
+        (when (= 1 (mod group-idx 2))
+          (put-text-property chunk-start pos 'font-lock-face face))
+        (setq pos chunk-start)
+        (setq group-idx (1+ group-idx))))))
+
 (defun my-highlight-hex-or-bits (limit)
   "Highlight parts of x\"...\" strings as hex or bit vectors.
 
