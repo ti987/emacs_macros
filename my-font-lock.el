@@ -5,14 +5,14 @@
 
 
 (defun my-highlight-groups-from-right (beg end face chunk-size)
-  "Apply FACE to odd-indexed chunks of CHUNK-SIZE chars from BEG to END.
+  "Apply FACE to even-indexed chunks of CHUNK-SIZE chars from BEG to END.
 Chunks are indexed from the right starting at 0.
-Odd-indexed chunks (1, 3, 5, ...) get FACE; even-indexed chunks are unchanged."
+Even-indexed chunks (0, 2, 4, ...) get FACE; odd-indexed chunks are unchanged."
   (let ((pos end)
         (group-idx 0))
     (while (> pos beg)
       (let ((chunk-start (max beg (- pos chunk-size))))
-        (when (= 1 (mod group-idx 2))
+        (when (= 0 (mod group-idx 2))
           (put-text-property chunk-start pos 'font-lock-face face))
         (setq pos chunk-start)
         (setq group-idx (1+ group-idx))))))
@@ -20,7 +20,7 @@ Odd-indexed chunks (1, 3, 5, ...) get FACE; even-indexed chunks are unchanged."
 (defun my-highlight-hex-or-bits (limit)
   "Highlight VHDL vector literals [bBoOxX]\"...\" up to LIMIT with alternating group faces.
 Digits are grouped from the right in chunks of 4.
-Odd-indexed groups (1, 3, 5, ...) get `my-hex-vec-face'.
+Even-indexed groups (0, 2, 4, ...) get `my-hex-vec-face', starting from the rightmost chunk.
 Only highlights well-formed literals (correct digit set for the given prefix)."
   (when (re-search-forward "\\([bBoOxX]\\)\"\\([^\n\"]*\\)\"" limit t)
     ;; Save buffer positions from match-data before any string operations
