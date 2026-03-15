@@ -194,23 +194,23 @@
            (string-match-p "case line:" output))
 
     ;; --- New: node declaration format ---
-    (check "Output contains r-box node declaration for ST_IDLE"
-           (string-match-p "ST_IDLE := r-box(" output))
+    (check "Output contains node declaration for ST_IDLE"
+           (string-match-p "node ST_IDLE " output))
 
-    (check "Output contains r-box node declaration for ST_RUNNING"
-           (string-match-p "ST_RUNNING := r-box(" output))
+    (check "Output contains node declaration for ST_RUNNING"
+           (string-match-p "node ST_RUNNING " output))
 
-    (check "Output contains r-box node declaration for ST_DONE"
-           (string-match-p "ST_DONE := r-box(" output))
+    (check "Output contains node declaration for ST_DONE"
+           (string-match-p "node ST_DONE " output))
 
-    (check "r-box label for ST_IDLE includes state comment (Idle: wait for start)"
-           (string-match-p "ST_IDLE := r-box(\"ST_IDLE\\\\nIdle: wait for start\")" output))
+    (check "node label for ST_IDLE includes state comment (Idle: wait for start)"
+           (string-match-p "node ST_IDLE \"ST_IDLE\\\\nIdle: wait for start\"" output))
 
-    (check "r-box label for ST_RUNNING includes state comment (Running: process data)"
-           (string-match-p "ST_RUNNING := r-box(\"ST_RUNNING\\\\nRunning: process data\")" output))
+    (check "node label for ST_RUNNING includes state comment (Running: process data)"
+           (string-match-p "node ST_RUNNING \"ST_RUNNING\\\\nRunning: process data\"" output))
 
-    (check "r-box label for ST_ERROR has no extra \\n (no comment)"
-           (string-match-p "ST_ERROR := r-box(\"ST_ERROR\")" output))
+    (check "node label for ST_ERROR has no extra \\n (no comment)"
+           (string-match-p "node ST_ERROR \"ST_ERROR\"" output))
 
     ;; --- New: transition arrow format ---
     (check "Output contains transition arrow ST_IDLE -> ST_RUNNING"
@@ -230,7 +230,7 @@
 
     ;; Node declarations appear before the blank separator / transition section
     (check "Node declaration appears before corresponding transition arrow"
-           (< (string-match "ST_IDLE := r-box" output)
+           (< (string-match "node ST_IDLE " output)
               (string-match "ST_IDLE -> ST_RUNNING" output))))
 
   ;; --- Head-comment insertion ---

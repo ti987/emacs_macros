@@ -14,8 +14,8 @@
 ;;   4. Write (or refresh) a `-- %DSL_START' ... `-- %DSL_END' block at
 ;;      the end of the file's leading comment section.
 ;;
-;; Output format (box-diagram DSL, `--' prefix stripped by box-diagram.el):
-;;   Node declarations:  -- STATE := r-box("STATE\nCOMMENT")
+;; Output format (state-machine DSL; see §5 grammar above):
+;;   Node declarations:  -- node STATE "STATE\nCOMMENT"
 ;;   Transition arrows:  -- FROM -> TO
 ;;
 ;; Usage:
@@ -357,15 +357,14 @@ Returns a list of plists.  Each plist has the keys:
 ;;; ---------------------------------------------------------------------------
 
 (defun vhdl-sm--format-output (sm-list buf-name)
-  "Format SM-LIST as a box-diagram DSL comment block string.
+  "Format SM-LIST as a state-machine DSL comment block string.
 BUF-NAME is used in the block header for identification.
 
-The output uses box-diagram DSL syntax (compatible with box-diagram.el):
-  Node declarations:  -- STATE := r-box(\"STATE_NAME\\nCOMMENT\")
+The output follows the DSL grammar defined in this file's head comment (§5):
+  Node declarations:  -- node STATE_NAME \"label\"
   Transition arrows:  -- FROM -> TO
-The leading `--' prefix is stripped by box-diagram when rendering, so
-selecting and running M-x box-diagram-render on any single state machine
-block produces a rendered state diagram."
+The leading `--' prefix is stripped by the DSL renderer; `#' begins a
+comment in the DSL, so section headers are written as `-- # ...'."
   (let ((lines
          (list
           "-- %DSL_START extract-state-machines"
@@ -386,13 +385,13 @@ block produces a rendered state diagram."
                   (if label
                       (format "%s (line %d)" label pline)
                     (format "unnamed process (line %d)" pline))))
-            ;; Section header (box-diagram comment: ## is stripped by box-diagram)
+            ;; Section header (# is the DSL comment marker per §5.1)
             (setq lines
                   (append lines
                           (list (format
-                                 "-- ## %d. state signal: %s  [process: %s, case line: %d]"
+                                 "-- # %d. state signal: %s  [process: %s, case line: %d]"
                                  i sig proc-str sline))))
-            ;; Node declarations: STATE := r-box("STATE_NAME\nCOMMENT")
+            ;; Node declarations: node STATE_NAME "label"  (§5.2)
             (dolist (s states)
               (let* ((state-id  (car s))
                      (state-cmt (cadr s))
@@ -401,7 +400,7 @@ block produces a rendered state diagram."
                                   state-id)))
                 (setq lines
                       (append lines
-                              (list (format "-- %s := r-box(\"%s\")"
+                              (list (format "-- node %s \"%s\""
                                             state-id label-str))))))
             ;; Blank separator (box-diagram: lone -- acts as section separator)
             (setq lines (append lines (list "--")))
@@ -415,7 +414,7 @@ block produces a rendered state diagram."
                                                 (car tr) (cadr tr))))))
                   (setq lines (append lines (list "--"))))
               ;; No transitions detected
-              (setq lines (append lines (list "-- ## (no transitions detected)" "--"))))
+              (setq lines (append lines (list "-- # (no transitions detected)" "--"))))
             (setq i (1+ i))))))
     (setq lines (append lines (list "-- %DSL_END")))
     (mapconcat #'identity lines "\n")))
