@@ -18,7 +18,7 @@ Odd-indexed chunks (1, 3, 5, ...) get FACE; even-indexed chunks are unchanged."
         (setq group-idx (1+ group-idx))))))
 
 (defun my-highlight-hex-or-bits (limit)
-  "Highlight VHDL vector literals [bBoOxX]\"...\" with alternating group faces.
+  "Highlight VHDL vector literals [bBoOxX]\"...\" up to LIMIT with alternating group faces.
 Digits are grouped from the right in chunks of 4.
 Odd-indexed groups (1, 3, 5, ...) get `my-hex-vec-face'.
 Only highlights well-formed literals (correct digit set for the given prefix)."
