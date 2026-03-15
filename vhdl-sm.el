@@ -9,9 +9,14 @@
 ;;   2. Within each process, search for `case SIGNAL is' statements.
 ;;   3. If SIGNAL matches the state-signal regexp the process contains a
 ;;      state machine.  Collect all `when STATE =>' clauses (excluding
-;;      `others').
+;;      `others') and all state transitions (assignments `<= KNOWN_STATE'
+;;      within each `when' block).
 ;;   4. Write (or refresh) a `-- %DSL_START' ... `-- %DSL_END' block at
 ;;      the end of the file's leading comment section.
+;;
+;; Output format (box-diagram DSL, `--' prefix stripped by box-diagram.el):
+;;   Node declarations:  -- STATE := r-box("STATE\nCOMMENT")
+;;   Transition arrows:  -- FROM -> TO
 ;;
 ;; Usage:
 ;;   M-x extract-state-machines   (run in a VHDL buffer)
@@ -71,7 +76,8 @@ Returns a list of plists.  Each plist has the keys:
   :process-line   - line number of the `process' keyword
   :sm-signal      - name of the `case' control variable
   :sm-line        - line number of the `case' statement
-  :states         - list of (STATE-ID COMMENT-OR-NIL) pairs"
+  :states         - list of (STATE-ID COMMENT-OR-NIL) pairs
+  :transitions    - list of (FROM-STATE TO-STATE) pairs (deduplicated)"
   (let ((results '())
         (eof (point-max)))
     (save-excursion
@@ -101,8 +107,9 @@ Returns a list of plists.  Each plist has the keys:
                               "\\([a-zA-Z][a-zA-Z0-9_.]*\\)"
                               "[ \t\n]+\\<is\\>")
                       proc-end t)
-                (let* ((case-var  (match-string-no-properties 1))
-                       (case-line (line-number-at-pos (match-beginning 0))))
+                (let* ((case-var       (match-string-no-properties 1))
+                       (case-line      (line-number-at-pos (match-beginning 0)))
+                       (case-body-start (point)))  ; position right after "case X is"
                   (when (vhdl-sm--match-regexp state-regexp case-var)
                     ;; Collect `when STATE =>' clauses at nesting depth 1
                     (let ((states '())
@@ -131,21 +138,36 @@ Returns a list of plists.  Each plist has the keys:
                                         (vhdl-sm--trim
                                          (match-string-no-properties 1)))))
                               (push (list state-id state-cmt) states))))))
-                      (push (list :process-label proc-label
-                                  :process-line  proc-line
-                                  :sm-signal     case-var
-                                  :sm-line       case-line
-                                  :states        (nreverse states))
-                            results)))))))))
-    (nreverse results))))
+                      ;; Scan transitions using the collected state IDs
+                      (let* ((state-ids  (mapcar #'car states))
+                             (transitions
+                              (save-excursion
+                                (goto-char case-body-start)
+                                (vhdl-sm--collect-transitions
+                                 state-ids proc-end))))
+                        (push (list :process-label proc-label
+                                    :process-line  proc-line
+                                    :sm-signal     case-var
+                                    :sm-line       case-line
+                                    :states        (nreverse states)
+                                    :transitions   transitions)
+                              results)))))))))))
+    (nreverse results)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Output formatter
 ;;; ---------------------------------------------------------------------------
 
 (defun vhdl-sm--format-output (sm-list buf-name)
-  "Format SM-LIST as a VHDL comment block string.
-BUF-NAME is used in the block header for identification."
+  "Format SM-LIST as a box-diagram DSL comment block string.
+BUF-NAME is used in the block header for identification.
+
+The output uses box-diagram DSL syntax (compatible with box-diagram.el):
+  Node declarations:  -- STATE := r-box(\"STATE_NAME\\nCOMMENT\")
+  Transition arrows:  -- FROM -> TO
+The leading `--' prefix is stripped by box-diagram when rendering, so
+selecting and running M-x box-diagram-render on any single state machine
+block produces a rendered state diagram."
   (let ((lines
          (list
           "-- %DSL_START extract-state-machines"
@@ -156,35 +178,100 @@ BUF-NAME is used in the block header for identification."
         (setq lines (append lines (list "-- No state machines found." "--")))
       (let ((i 1))
         (dolist (sm sm-list)
-          (let* ((label  (plist-get sm :process-label))
-                 (pline  (plist-get sm :process-line))
-                 (sig    (plist-get sm :sm-signal))
-                 (sline  (plist-get sm :sm-line))
-                 (states (plist-get sm :states))
+          (let* ((label       (plist-get sm :process-label))
+                 (pline       (plist-get sm :process-line))
+                 (sig         (plist-get sm :sm-signal))
+                 (sline       (plist-get sm :sm-line))
+                 (states      (plist-get sm :states))
+                 (transitions (plist-get sm :transitions))
                  (proc-str
                   (if label
                       (format "%s (line %d)" label pline)
                     (format "unnamed process (line %d)" pline))))
+            ;; Section header (box-diagram comment: ## is stripped by box-diagram)
             (setq lines
                   (append lines
                           (list (format
-                                 "-- %d. state signal: %s  [process: %s, case line: %d]"
+                                 "-- ## %d. state signal: %s  [process: %s, case line: %d]"
                                  i sig proc-str sline))))
-            (when states
-              (setq lines (append lines (list "--    states:")))
-              (dolist (s states)
-                (let ((state-id  (car s))
-                      (state-cmt (cadr s)))
-                  (setq lines
-                        (append lines
-                                (list (if state-cmt
-                                          (format "--      %s  -- %s"
-                                                  state-id state-cmt)
-                                        (format "--      %s" state-id))))))))
+            ;; Node declarations: STATE := r-box("STATE_NAME\nCOMMENT")
+            (dolist (s states)
+              (let* ((state-id  (car s))
+                     (state-cmt (cadr s))
+                     (label-str (if state-cmt
+                                    (format "%s\\n%s" state-id state-cmt)
+                                  state-id)))
+                (setq lines
+                      (append lines
+                              (list (format "-- %s := r-box(\"%s\")"
+                                            state-id label-str))))))
+            ;; Blank separator (box-diagram: lone -- acts as section separator)
             (setq lines (append lines (list "--")))
+            ;; Transition arrows: FROM -> TO
+            (if transitions
+                (progn
+                  (dolist (tr transitions)
+                    (setq lines
+                          (append lines
+                                  (list (format "-- %s -> %s"
+                                                (car tr) (cadr tr))))))
+                  (setq lines (append lines (list "--"))))
+              ;; No transitions detected
+              (setq lines (append lines (list "-- ## (no transitions detected)" "--"))))
             (setq i (1+ i))))))
     (setq lines (append lines (list "-- %DSL_END")))
     (mapconcat #'identity lines "\n")))
+
+;;; ---------------------------------------------------------------------------
+;;; Transition scanner
+;;; ---------------------------------------------------------------------------
+
+(defun vhdl-sm--collect-transitions (state-ids end)
+  "Scan from current position to END, collecting state transitions.
+STATE-IDS is the list of known state identifier strings for this machine.
+Returns a deduplicated list of (FROM-STATE TO-STATE) pairs.
+
+The algorithm tracks which `when STATE =>' block is active and, within
+each block, looks for signal assignment lines `SIGNAL <= KNOWN_STATE'
+where KNOWN_STATE is a member of STATE-IDS.  Assignments inside nested
+`if'/`case' structures are still attributed to the enclosing `when'
+state, capturing all transitions reachable from each state."
+  (let ((current-from nil)
+        (transitions  '())
+        (nest         1))
+    (while (and (zerop (forward-line))
+                (> nest 0)
+                (< (point) end))
+      (cond
+       ;; Inner case: increase nesting depth
+       ((looking-at "^[ \t]*\\<case\\>[ \t]")
+        (setq nest (1+ nest)))
+       ;; End of a case block: decrease nesting depth
+       ((looking-at "^[ \t]*\\<end\\>[ \t]+\\<case\\>")
+        (setq nest (1- nest)))
+       ;; New `when STATE =>' at depth 1: update current-from state
+       ((and (= nest 1)
+             (looking-at
+              (concat "^[ \t]*\\<when\\>[ \t]+"
+                      "\\([a-zA-Z][a-zA-Z0-9_]*\\)"
+                      "[ \t]*=>")))
+        (let ((state-id (match-string-no-properties 1)))
+          (setq current-from
+                (unless (string-equal (downcase state-id) "others")
+                  state-id))))
+       ;; Signal assignment `SIGNAL <= IDENTIFIER': record if IDENTIFIER is a
+       ;; known state and current-from is set (i.e., not inside `others')
+       ((and current-from
+             (looking-at
+              (concat "^[ \t]*[a-zA-Z][a-zA-Z0-9_]*[ \t]*"
+                      "<=[ \t]*"
+                      "\\([a-zA-Z][a-zA-Z0-9_]*\\)"
+                      "[ \t]*;")))
+        (let ((to-state (match-string-no-properties 1)))
+          (when (and (member to-state state-ids)
+                     (not (member (list current-from to-state) transitions)))
+            (push (list current-from to-state) transitions))))))
+    (nreverse transitions)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Head-comment writer

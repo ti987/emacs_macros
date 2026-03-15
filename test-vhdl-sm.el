@@ -1,5 +1,5 @@
 ;;; test-vhdl-sm.el --- Batch tests for vhdl-sm.el
-;;; Usage: emacs --batch -l test-vhdl-sm.el
+;;; Usage: cd <repo-root> && emacs --batch -l test-vhdl-sm.el
 
 (require 'cl-lib)
 
@@ -108,6 +108,59 @@
                                      (> (plist-get sm :process-line) 0)))
                    sms))
 
+  ;; --- Transition collection ---
+  (message "\n-- Transition collection --")
+
+  (let ((cur-sm (cl-find "cur_state" sms
+                         :key (lambda (sm) (plist-get sm :sm-signal))
+                         :test #'string-equal)))
+
+    (check ":transitions key is present in scan result"
+           (and cur-sm (not (eq (plist-get cur-sm :transitions) 'missing))))
+
+    (check "cur_state machine has at least one transition"
+           (and cur-sm (> (length (plist-get cur-sm :transitions)) 0)))
+
+    (check "ST_IDLE -> ST_RUNNING transition captured"
+           (and cur-sm
+                (cl-some (lambda (tr)
+                           (and (string-equal (car  tr) "ST_IDLE")
+                                (string-equal (cadr tr) "ST_RUNNING")))
+                         (plist-get cur-sm :transitions))))
+
+    (check "ST_RUNNING -> ST_DONE transition captured"
+           (and cur-sm
+                (cl-some (lambda (tr)
+                           (and (string-equal (car  tr) "ST_RUNNING")
+                                (string-equal (cadr tr) "ST_DONE")))
+                         (plist-get cur-sm :transitions))))
+
+    (check "ST_DONE -> ST_IDLE transition captured"
+           (and cur-sm
+                (cl-some (lambda (tr)
+                           (and (string-equal (car  tr) "ST_DONE")
+                                (string-equal (cadr tr) "ST_IDLE")))
+                         (plist-get cur-sm :transitions))))
+
+    (check "ST_ERROR -> ST_IDLE transition captured"
+           (and cur-sm
+                (cl-some (lambda (tr)
+                           (and (string-equal (car  tr) "ST_ERROR")
+                                (string-equal (cadr tr) "ST_IDLE")))
+                         (plist-get cur-sm :transitions))))
+
+    (check "No duplicate transitions (each (FROM TO) pair is unique)"
+           (and cur-sm
+                (let ((trs (plist-get cur-sm :transitions)))
+                  (= (length trs)
+                     (length (cl-remove-duplicates trs :test #'equal))))))
+
+    (check "data_in case produces no transitions in its own scan (not a state machine)"
+           ;; data_proc is never added to sms, so no transitions either
+           (not (cl-some (lambda (sm)
+                           (string-equal (plist-get sm :sm-signal) "data_in"))
+                         sms))))
+
   ;; --- Format output ---
   (message "\n-- Output format --")
 
@@ -138,7 +191,47 @@
            (not (string-match-p "data_in" output)))
 
     (check "Output contains 'case line:' annotation"
-           (string-match-p "case line:" output)))
+           (string-match-p "case line:" output))
+
+    ;; --- New: node declaration format ---
+    (check "Output contains r-box node declaration for ST_IDLE"
+           (string-match-p "ST_IDLE := r-box(" output))
+
+    (check "Output contains r-box node declaration for ST_RUNNING"
+           (string-match-p "ST_RUNNING := r-box(" output))
+
+    (check "Output contains r-box node declaration for ST_DONE"
+           (string-match-p "ST_DONE := r-box(" output))
+
+    (check "r-box label for ST_IDLE includes state comment (Idle: wait for start)"
+           (string-match-p "ST_IDLE := r-box(\"ST_IDLE\\\\nIdle: wait for start\")" output))
+
+    (check "r-box label for ST_RUNNING includes state comment (Running: process data)"
+           (string-match-p "ST_RUNNING := r-box(\"ST_RUNNING\\\\nRunning: process data\")" output))
+
+    (check "r-box label for ST_ERROR has no extra \\n (no comment)"
+           (string-match-p "ST_ERROR := r-box(\"ST_ERROR\")" output))
+
+    ;; --- New: transition arrow format ---
+    (check "Output contains transition arrow ST_IDLE -> ST_RUNNING"
+           (string-match-p "ST_IDLE -> ST_RUNNING" output))
+
+    (check "Output contains transition arrow ST_RUNNING -> ST_DONE"
+           (string-match-p "ST_RUNNING -> ST_DONE" output))
+
+    (check "Output contains transition arrow ST_DONE -> ST_IDLE"
+           (string-match-p "ST_DONE -> ST_IDLE" output))
+
+    (check "Output contains transition arrow ST_ERROR -> ST_IDLE"
+           (string-match-p "ST_ERROR -> ST_IDLE" output))
+
+    (check "Output contains self-loop ST_IDLE -> ST_IDLE (from else branch)"
+           (string-match-p "ST_IDLE -> ST_IDLE" output))
+
+    ;; Node declarations appear before the blank separator / transition section
+    (check "Node declaration appears before corresponding transition arrow"
+           (< (string-match "ST_IDLE := r-box" output)
+              (string-match "ST_IDLE -> ST_RUNNING" output))))
 
   ;; --- Head-comment insertion ---
   (message "\n-- Head comment insertion --")
