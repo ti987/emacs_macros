@@ -360,9 +360,9 @@ The leading `--' prefix is stripped by the DSL renderer; `#' begins a
 comment in the DSL, so section headers are written as `-- # ...'."
   (let ((lines
          (list
-          "-- %DSL_START extract-state-machines"
-          (concat "-- Generated: " (format-time-string "%Y-%m-%d %H:%M:%S %Z"))
-          (concat "-- File: " (file-name-nondirectory buf-name))
+          "-- %DSL_START "
+          (concat "-- # Generated: " (format-time-string "%Y-%m-%d %H:%M:%S %Z"))
+          (concat "-- # File: " (file-name-nondirectory buf-name))
           "--")))
     (if (null sm-list)
         (setq lines (append lines (list "-- No state machines found." "--")))
