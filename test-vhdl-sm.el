@@ -203,30 +203,30 @@
     (check "Output contains node declaration for ST_DONE"
            (string-match-p "node ST_DONE " output))
 
-    (check "node label for ST_IDLE includes state comment (Idle: wait for start)"
-           (string-match-p "node ST_IDLE \"ST_IDLE\\\\nIdle: wait for start\"" output))
+    (check "node label for ST_IDLE includes line number"
+           (string-match-p "node ST_IDLE \"ST_IDLE\\\\n[0-9]+\"" output))
 
-    (check "node label for ST_RUNNING includes state comment (Running: process data)"
-           (string-match-p "node ST_RUNNING \"ST_RUNNING\\\\nRunning: process data\"" output))
+    (check "node label for ST_RUNNING includes line number"
+           (string-match-p "node ST_RUNNING \"ST_RUNNING\\\\n[0-9]+\"" output))
 
-    (check "node label for ST_ERROR has no extra \\n (no comment)"
-           (string-match-p "node ST_ERROR \"ST_ERROR\"" output))
+    (check "node label for ST_ERROR includes line number"
+           (string-match-p "node ST_ERROR \"ST_ERROR\\\\n[0-9]+\"" output))
 
     ;; --- New: transition arrow format ---
-    (check "Output contains transition arrow ST_IDLE -> ST_RUNNING"
-           (string-match-p "ST_IDLE -> ST_RUNNING" output))
+    (check "Output contains transition arrow ST_IDLE -> ST_RUNNING with line label"
+           (string-match-p "ST_IDLE -> ST_RUNNING \"[0-9]+\"" output))
 
-    (check "Output contains transition arrow ST_RUNNING -> ST_DONE"
-           (string-match-p "ST_RUNNING -> ST_DONE" output))
+    (check "Output contains transition arrow ST_RUNNING -> ST_DONE with line label"
+           (string-match-p "ST_RUNNING -> ST_DONE \"[0-9]+\"" output))
 
-    (check "Output contains transition arrow ST_DONE -> ST_IDLE"
-           (string-match-p "ST_DONE -> ST_IDLE" output))
+    (check "Output contains transition arrow ST_DONE -> ST_IDLE with line label"
+           (string-match-p "ST_DONE -> ST_IDLE \"[0-9]+\"" output))
 
-    (check "Output contains transition arrow ST_ERROR -> ST_IDLE"
-           (string-match-p "ST_ERROR -> ST_IDLE" output))
+    (check "Output contains transition arrow ST_ERROR -> ST_IDLE with line label"
+           (string-match-p "ST_ERROR -> ST_IDLE \"[0-9]+\"" output))
 
     (check "Output contains self-loop ST_IDLE -> ST_IDLE (from else branch)"
-           (string-match-p "ST_IDLE -> ST_IDLE" output))
+           (string-match-p "ST_IDLE -> ST_IDLE \"[0-9]+\"" output))
 
     ;; Node declarations appear before the blank separator / transition section
     (check "Node declaration appears before corresponding transition arrow"

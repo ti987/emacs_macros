@@ -15,8 +15,8 @@
 ;;      the end of the file's leading comment section.
 ;;
 ;; Output format (state-machine DSL; see §5 grammar above):
-;;   Node declarations:  -- node STATE "STATE\nCOMMENT"
-;;   Transition arrows:  -- FROM -> TO
+;;   Node declarations:  -- node STATE "STATE\nLINE"
+;;   Transition arrows:  -- FROM -> TO "LINE"
 ;;
 ;; Usage:
 ;;   M-x extract-state-machines   (run in a VHDL buffer)
@@ -274,8 +274,8 @@ Returns a list of plists.  Each plist has the keys:
   :process-line   - line number of the `process' keyword
   :sm-signal      - name of the `case' control variable
   :sm-line        - line number of the `case' statement
-  :states         - list of (STATE-ID COMMENT-OR-NIL) pairs
-  :transitions    - list of (FROM-STATE TO-STATE) pairs (deduplicated)"
+  :states         - list of (STATE-ID LINE-NUMBER) pairs
+  :transitions    - list of (FROM-STATE TO-STATE LINE-NUMBER) triples (deduplicated)"
   (let ((results '())
         (eof (point-max)))
     (save-excursion
@@ -325,17 +325,10 @@ Returns a list of plists.  Each plist has the keys:
                                 (concat "^[ \t]*\\<when\\>[ \t]+"
                                         "\\([a-zA-Z][a-zA-Z0-9_]*\\)"
                                         "[ \t]*=>")))
-                          (let ((state-id  (match-string-no-properties 1))
-                                (state-cmt nil))
+                          (let ((state-id   (match-string-no-properties 1))
+                                (state-line (line-number-at-pos (point))))
                             (unless (string-equal (downcase state-id) "others")
-                              ;; Capture an optional comment on the next line
-                              (save-excursion
-                                (forward-line)
-                                (when (looking-at "^[ \t]*--[ \t]*\\(.*\\)$")
-                                  (setq state-cmt
-                                        (vhdl-sm--trim
-                                         (match-string-no-properties 1)))))
-                              (push (list state-id state-cmt) states))))))
+                              (push (list state-id state-line) states))))))
                       ;; Scan transitions using the collected state IDs
                       (let* ((state-ids  (mapcar #'car states))
                              (transitions
@@ -361,8 +354,8 @@ Returns a list of plists.  Each plist has the keys:
 BUF-NAME is used in the block header for identification.
 
 The output follows the DSL grammar defined in this file's head comment (§5):
-  Node declarations:  -- node STATE_NAME \"label\"
-  Transition arrows:  -- FROM -> TO
+  Node declarations:  -- node STATE_NAME \"STATE_ID\\nLINE\"
+  Transition arrows:  -- FROM -> TO \"LINE\"
 The leading `--' prefix is stripped by the DSL renderer; `#' begins a
 comment in the DSL, so section headers are written as `-- # ...'."
   (let ((lines
@@ -391,27 +384,25 @@ comment in the DSL, so section headers are written as `-- # ...'."
                           (list (format
                                  "-- # %d. state signal: %s  [process: %s, case line: %d]"
                                  i sig proc-str sline))))
-            ;; Node declarations: node STATE_NAME "label"  (§5.2)
+            ;; Node declarations: node STATE_NAME "STATE_ID\nLINE"  (§5.2)
             (dolist (s states)
-              (let* ((state-id  (car s))
-                     (state-cmt (cadr s))
-                     (label-str (if state-cmt
-                                    (format "%s\\n%s" state-id state-cmt)
-                                  state-id)))
+              (let* ((state-id   (car s))
+                     (state-line (cadr s))
+                     (label-str  (format "%s\\n%d" state-id state-line)))
                 (setq lines
                       (append lines
                               (list (format "-- node %s \"%s\""
                                             state-id label-str))))))
             ;; Blank separator (box-diagram: lone -- acts as section separator)
             (setq lines (append lines (list "--")))
-            ;; Transition arrows: FROM -> TO
+            ;; Transition arrows: FROM -> TO "LINE"
             (if transitions
                 (progn
                   (dolist (tr transitions)
                     (setq lines
                           (append lines
-                                  (list (format "-- %s -> %s"
-                                                (car tr) (cadr tr))))))
+                                  (list (format "-- %s -> %s \"%d\""
+                                                (car tr) (cadr tr) (caddr tr))))))
                   (setq lines (append lines (list "--"))))
               ;; No transitions detected
               (setq lines (append lines (list "-- # (no transitions detected)" "--"))))
@@ -426,7 +417,7 @@ comment in the DSL, so section headers are written as `-- # ...'."
 (defun vhdl-sm--collect-transitions (state-ids end)
   "Scan from current position to END, collecting state transitions.
 STATE-IDS is the list of known state identifier strings for this machine.
-Returns a deduplicated list of (FROM-STATE TO-STATE) pairs.
+Returns a deduplicated list of (FROM-STATE TO-STATE LINE-NUMBER) triples.
 
 The algorithm tracks which `when STATE =>' block is active and, within
 each block, looks for signal assignment lines `SIGNAL <= KNOWN_STATE'
@@ -464,10 +455,14 @@ state, capturing all transitions reachable from each state."
                       "<=[ \t]*"
                       "\\([a-zA-Z][a-zA-Z0-9_]*\\)"
                       "[ \t]*;")))
-        (let ((to-state (match-string-no-properties 1)))
+        (let ((to-state   (match-string-no-properties 1))
+              (trans-line (line-number-at-pos (point))))
           (when (and (member to-state state-ids)
-                     (not (member (list current-from to-state) transitions)))
-            (push (list current-from to-state) transitions))))))
+                     (not (cl-some (lambda (tr)
+                                     (and (string-equal (car tr) current-from)
+                                          (string-equal (cadr tr) to-state)))
+                                   transitions)))
+            (push (list current-from to-state trans-line) transitions))))))
     (nreverse transitions)))
 
 ;;; ---------------------------------------------------------------------------
