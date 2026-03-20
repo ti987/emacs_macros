@@ -55,7 +55,7 @@
                          (symbol-name key-map) " \"" key "\"" 
                          " '(lambda () (interactive) (lightning-key "
                          "\"" key "\" " (prin1-to-string trans-list ) ") ) )" ) )
-      (eval-string sexp)
+      (eval (read sexp))
       (setq klist (cdr klist))
       ))   
 )
@@ -108,7 +108,7 @@ If 'exp-sp' is t, move pointer back 'lightning-pos', replace '\n' in 'str'
 with '\n\\s-*' then delete 'str' if matches."
   (if exp-sp
       (progn
-        (let ((str2 (replace-in-string str "\n *" "\n\\s-*"))
+        (let ((str2 (replace-regexp-in-string "\n *" "\n\\s-*" str))
               (bpos (point))
               )
           (setq str2 (concat "\\s-*" str2))
