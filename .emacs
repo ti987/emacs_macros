@@ -2210,7 +2210,7 @@ column postion (col)."
   
   (defun eval-string (exp)
     "evaluate <exp>"
-    (eval-expression exp)
+    (eval (read exp))
     )
   
   (defun face-at-point-command ()
