@@ -91,7 +91,7 @@ Returns (NAME VALUE-STRING) on success, nil on failure."
                 (name (pop peg--stack)))
            (push (list name val) peg--stack))))
        (ws      (set " \t"))
-       (id-char [a-zA-Z0-9_]))
+       (id-char [a-z A-Z 0-9 ?_]))
     (car (peg-run (peg const-decl)))))
 
 (defun peg-ex2-demo ()
@@ -196,7 +196,7 @@ Returns (NAME DIRECTION TYPE) as strings, or nil on failure."
                 (dir  (pop peg--stack))
                 (name (pop peg--stack)))
            (push (list name dir typ) peg--stack))))
-       (id-char [a-zA-Z0-9_])
+       (id-char [a-z A-Z 0-9 ?_])
        (ws      (set " \t")))
     (car (peg-run (peg port-decl)))))
 
