@@ -232,32 +232,41 @@ Returns a type string or nil if the type cannot be determined."
 
 (defun vhdl-find-decl--parse-params (params-str)
   "Parse a subprogram formal parameter list PARAMS-STR.
-Returns a list of (MODE BASE-TYPE) for each parameter position,
-expanding multi-name groups like 'a, b : integer' into separate entries."
+Returns a list of (NAME MODE BASE-TYPE HAS-DEFAULT) for each parameter,
+expanding multi-name groups like 'a, b : integer' into separate entries.
+HAS-DEFAULT is t when the parameter carries a ':=' default value."
   (let ((result '()))
     (dolist (group (split-string params-str ";" t))
       (setq group (string-trim group))
-      ;; Each group: 'name1, name2 : [mode] type'
+      ;; Each group: 'name1, name2 : [mode] type [:= default]'
       (when (string-match "\\([^:]+\\):\\([^\n]*\\)" group)
         (let* ((names-part (string-trim (match-string 1 group)))
                (type-part  (string-trim (match-string 2 group)))
-               (mode "in"))
+               (mode "in")
+               has-default type-only)
+          ;; Extract optional mode keyword
           (when (string-match
                  "^\\(in\\|out\\|inout\\|buffer\\)\\s-+\\(.*\\)" type-part)
             (setq mode     (downcase (match-string 1 type-part)))
             (setq type-part (string-trim (match-string 2 type-part))))
-          (let* ((base  (vhdl-find-decl--base-type type-part))
+          ;; Detect and strip ':= default' — [^:]* stops at the first ':'
+          (if (string-match "^\\([^:]*\\):=.*" type-part)
+              (setq has-default t
+                    type-only   (string-trim (match-string 1 type-part)))
+            (setq has-default nil
+                  type-only   type-part))
+          (let* ((base  (vhdl-find-decl--base-type type-only))
                  (names (mapcar #'string-trim
                                 (split-string names-part "," t))))
-            (dolist (_ names)
-              (push (list mode base) result))))))
+            (dolist (n names)
+              (push (list (downcase n) mode base has-default) result))))))
     (nreverse result)))
 
 (defun vhdl-find-decl--collect-in-buffer (name buf)
   "Return all function/procedure declarations of NAME found in buffer BUF.
 Each entry is a list (POINT PARAMS KIND FILE) where:
   POINT  - buffer position of the declaration keyword
-  PARAMS - list of (MODE BASE-TYPE) for each formal parameter
+  PARAMS - list of (NAME MODE BASE-TYPE HAS-DEFAULT) per formal parameter
   KIND   - symbol 'function or 'procedure
   FILE   - absolute path of the file, or nil for unsaved buffers."
   (let ((result '())
@@ -299,10 +308,58 @@ Each entry is a list (POINT PARAMS KIND FILE) where:
         (push (match-string-no-properties 1) result)))
     (nreverse result)))
 
+(defun vhdl-find-decl--count-match-p (params nargs)
+  "Return t if PARAMS can accept NARGS arguments.
+Parameters with ':=' defaults may be omitted, so the required count is
+the number of parameters that have no default."
+  (let ((required (seq-count (lambda (p) (not (nth 3 p))) params))
+        (total    (length params)))
+    (and (>= nargs required) (<= nargs total))))
+
+(defun vhdl-find-decl--positional-type-match-p (params arg-types)
+  "Return t if ARG-TYPES are positionally compatible with PARAMS.
+params element layout: (NAME MODE BASE-TYPE HAS-DEFAULT).
+Unknown actual types (nil) are treated as compatible with any formal type."
+  (cl-every
+   (lambda (i)
+     (let ((atype (nth i arg-types))
+           (ftype (nth 2 (nth i params))))
+       (or (null atype)
+           (vhdl-find-decl--types-compat-p atype ftype))))
+   (number-sequence 0 (1- (length arg-types)))))
+
+(defun vhdl-find-decl--named-type-match-p (params args arg-types)
+  "Return t if named-association ARGS are type-compatible with PARAMS.
+Each arg of the form 'formal => actual' is looked up by formal name in
+PARAMS and its actual type (from ARG-TYPES) is compared to the formal's
+type.  Unresolved formals and unknown actual types are treated as compatible.
+Args that lack '=>' (positional in a mixed call) are skipped."
+  (cl-every
+   (lambda (i)
+     (let ((arg   (nth i args))
+           (atype (nth i arg-types)))
+       (if (string-match
+            "^\\s-*\\([a-zA-Z][a-zA-Z0-9_]*\\)\\s-*=>" arg)
+           (let* ((fname (downcase (match-string 1 arg)))
+                  (param (cl-find fname params
+                                  :key  (lambda (p) (car p))
+                                  :test #'string=)))
+             (or (null param)
+                 (null atype)
+                 (vhdl-find-decl--types-compat-p atype (nth 2 param))))
+         t)))                          ; positional in mixed call: skip
+   (number-sequence 0 (1- (length args)))))
+
 (defun vhdl-find-declaration-overloaded ()
   "Find the function/procedure declaration that matches the call at point.
 Handles overloading by matching argument count and, where determinable,
 argument types.  Searches the current buffer first, then imported packages.
+
+Supports:
+  - Positional association: foo(a, b)
+  - Named association (any order): foo(y => b, x => a)
+  - Mixed: foo(a, y => b)
+  - Omitted arguments with default values: foo(a) matching foo(a; b := 0)
 
 When exactly one match is found it jumps there in the other window.
 When multiple matches remain (e.g. unknown argument types) it offers
@@ -327,23 +384,24 @@ a completing-read selection."
                            name (find-file-noselect pkg-file)))))))
       (when (null all-decls)
         (user-error "No declaration found for '%s'" name))
-      ;; Filter 1: argument count must match
-      (let* ((by-count (seq-filter
-                        (lambda (d) (= (length (nth 1 d)) nargs))
+      ;; Determine association style: named when any arg contains '=>'
+      (let* ((named-p  (cl-some (lambda (a) (string-match "=>" a)) args))
+             ;; Filter 1: count — required params <= nargs <= total params
+             (by-count (seq-filter
+                        (lambda (d)
+                          (vhdl-find-decl--count-match-p (nth 1 d) nargs))
                         all-decls))
-             ;; Filter 2: type compatibility where actual types are known
-             ;;           Fall back to count-only filter if type filter yields nothing.
+             ;; Filter 2: type compatibility — dispatch on association style.
+             ;;           Fall back to count-only when type filter yields nothing.
              (candidates
               (or (seq-filter
                    (lambda (d)
                      (let ((params (nth 1 d)))
-                       (cl-every
-                        (lambda (i)
-                          (let ((atype (nth i arg-types))
-                                (ftype (nth 1 (nth i params))))
-                            (or (null atype)
-                                (vhdl-find-decl--types-compat-p atype ftype))))
-                        (number-sequence 0 (1- nargs)))))
+                       (if named-p
+                           (vhdl-find-decl--named-type-match-p
+                            params args arg-types)
+                         (vhdl-find-decl--positional-type-match-p
+                          params arg-types))))
                    by-count)
                   by-count)))
         (if (null candidates)
@@ -360,10 +418,13 @@ a completing-read selection."
                                (let* ((params (nth 1 d))
                                       (kind   (nth 2 d))
                                       (file   (nth 3 d))
+                                      ;; params: (NAME MODE BASE-TYPE HAS-DEFAULT)
                                       (sig    (mapconcat
                                                (lambda (p)
-                                                 (format "%s %s" (nth 0 p) (nth 1 p)))
-                                               params ", ")))
+                                                 (format "%s %s %s%s"
+                                                         (nth 1 p) (car p) (nth 2 p)
+                                                         (if (nth 3 p) ":=…" "")))
+                                               params "; ")))
                                  (format "%s %s(%s)  [%s]"
                                          kind name sig
                                          (if file

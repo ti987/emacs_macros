@@ -7,25 +7,34 @@ use ieee.numeric_std.all;
 package overload_pkg is
 
   -- Overloaded function: max
-  -- Calling max(a, b) with integer arguments should resolve here.
+  -- Positional: max(a_int, b_int)    -> resolves to integer overload
+  -- Positional: max(a_slv, b_slv)    -> resolves to std_logic_vector overload
+  -- Named:      max(b => x, a => y)  -> resolved by formal name lookup
   function max(a : integer; b : integer) return integer;
-
-  -- Calling max(a, b) with std_logic_vector arguments should resolve here.
   function max(a : std_logic_vector; b : std_logic_vector) return std_logic_vector;
-
-  -- Calling max(a, b) with unsigned arguments should resolve here.
   function max(a : unsigned; b : unsigned) return unsigned;
 
   -- Overloaded procedure: convert
-  -- Calling convert(din, dout) with (std_logic_vector, integer) resolves here.
+  -- Positional arg order distinguishes these two overloads.
   procedure convert(din : in std_logic_vector; dout : out integer);
-
-  -- Calling convert(din, dout) with (integer, std_logic_vector) resolves here.
   procedure convert(din : in integer; dout : out std_logic_vector);
 
-  -- Single-arg overloads of clamp
+  -- Functions with default values — callers may omit trailing args.
+  -- clamp(x)           -> resolves to 1-arg overload (no defaults needed)
+  -- clamp(x, 0, 255)   -> resolves to 3-arg overload
+  -- clamp(x, hi => 10) -> resolves to 3-arg overload (lo defaults to 0)
   function clamp(x : integer) return integer;
-  function clamp(x : integer; lo : integer; hi : integer) return integer;
+  function clamp(x   : integer;
+                 lo  : integer := 0;
+                 hi  : integer := integer'high) return integer;
+
+  -- Procedure with optional enable flag (default active-high).
+  -- write(addr, data)           -> 2 required args
+  -- write(addr, data, '0')      -> all 3 args supplied
+  -- write(addr => a, data => d) -> named association, enable omitted
+  procedure write(addr   : in  integer;
+                  data   : in  std_logic_vector;
+                  enable : in  std_logic := '1');
 
 end package overload_pkg;
 
@@ -61,12 +70,20 @@ package body overload_pkg is
     return x;
   end function clamp;
 
-  function clamp(x : integer; lo : integer; hi : integer) return integer is
+  function clamp(x : integer; lo : integer := 0; hi : integer := integer'high)
+    return integer is
   begin
-    if x < lo then return lo;
+    if    x < lo then return lo;
     elsif x > hi then return hi;
-    else return x;
+    else              return x;
     end if;
   end function clamp;
+
+  procedure write(addr   : in  integer;
+                  data   : in  std_logic_vector;
+                  enable : in  std_logic := '1') is
+  begin
+    null;
+  end procedure write;
 
 end package body overload_pkg;

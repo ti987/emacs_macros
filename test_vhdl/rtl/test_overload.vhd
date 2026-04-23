@@ -14,6 +14,8 @@ entity test_overload is
     b_slv   : in  std_logic_vector(7 downto 0);
     a_uns   : in  unsigned(7 downto 0);
     b_uns   : in  unsigned(7 downto 0);
+    addr    : in  integer;
+    en      : in  std_logic;
     result  : out integer
   );
 end entity test_overload;
@@ -28,28 +30,62 @@ architecture rtl of test_overload is
 
 begin
 
-  -- Cursor on 'max' or inside args -> resolves to max(integer; integer)
+  -- POSITIONAL ASSOCIATION ---------------------------------------------------
+
+  -- Cursor on 'max' -> resolves to max(integer; integer)
   max_int <= max(a_int, b_int);
 
-  -- Cursor on 'max' or inside args -> resolves to max(std_logic_vector; std_logic_vector)
+  -- Cursor on 'max' -> resolves to max(std_logic_vector; std_logic_vector)
   max_slv <= max(a_slv, b_slv);
 
-  -- Cursor on 'max' or inside args -> resolves to max(unsigned; unsigned)
+  -- Cursor on 'max' -> resolves to max(unsigned; unsigned)
   max_uns <= max(a_uns, b_uns);
 
-  -- Cursor on 'clamp' -> resolves to single-arg overload
+  -- NAMED ASSOCIATION (in order) --------------------------------------------
+
+  -- Same result as positional; formal names match declaration order.
+  max_int <= max(a => a_int, b => b_int);
+
+  -- NAMED ASSOCIATION (out of order) ----------------------------------------
+
+  -- Arguments reversed: 'b => a_int, a => b_int'.
+  -- Named matching looks up each formal by name, so still resolves to
+  -- the integer overload regardless of order.
+  max_int <= max(b => b_int, a => a_int);
+
+  -- OMITTED DEFAULTS ---------------------------------------------------------
+
+  -- clamp with only required arg -> resolves to 1-arg overload
   result <= clamp(a_int);
 
-  -- Cursor on 'clamp' -> resolves to three-arg overload
+  -- clamp with all 3 args -> resolves to 3-arg overload (lo/hi supplied)
   result <= clamp(a_int, 0, 255);
 
-  process(a_slv, a_int)
+  -- clamp with 2 args (lo omitted via named, hi supplied) ->
+  -- resolves to 3-arg overload; 'lo' uses its default of 0
+  result <= clamp(x => a_int, hi => 100);
+
+  process(a_slv, a_int, addr, en)
   begin
-    -- Cursor inside 'convert' args -> resolves to convert(std_logic_vector, integer)
+    -- POSITIONAL convert
+    -- Cursor on 'convert' -> resolves to convert(std_logic_vector, integer)
     convert(a_slv, conv_int);
 
-    -- Cursor inside 'convert' args -> resolves to convert(integer, std_logic_vector)
+    -- Cursor on 'convert' -> resolves to convert(integer, std_logic_vector)
     convert(a_int, conv_slv);
+
+    -- NAMED convert (out of order)
+    -- 'dout => conv_int, din => a_slv' reversed but still resolves correctly
+    convert(dout => conv_int, din => a_slv);
+
+    -- PROCEDURE WITH DEFAULT: enable omitted -> write(addr, data) is valid
+    write(addr, a_slv);
+
+    -- All 3 args supplied (explicit enable)
+    write(addr, a_slv, en);
+
+    -- Named with enable omitted
+    write(addr => addr, data => a_slv);
   end process;
 
 end architecture rtl;
