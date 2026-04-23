@@ -1,20 +1,16 @@
 ;;; vhdl-gpt.el --- VHDL Helper for Jumping to Declarations -*- lexical-binding: t -*-
 
-;; Version: 0.2
-;; If the type declaration is found in the current file, it now:
-;;
-;;  Opens the same buffer in the other window
-;;
-;;  Jumps the cursor in that window to the type declaration location
-;; Version: 0.1
+;; Version: 0.3
 ;; Features:
 ;; - Jump to signal/type declaration from usage
 ;; - Jump to record type definition
 ;; - Search local file first, then packages
 ;; - Skips built-in/simulator packages
 ;; - Comments closing parens for nested expressions in port tables
+;; - Find overloaded function/procedure declaration by argument count and type
 
 (require 'cl-lib)
+(require 'seq)
 (require 'thingatpt)
 
 (defvar vhdl-gpt-package-dirs '("./" "../src" "../pkg")
@@ -93,6 +89,299 @@
   (let ((symbol (vhdl-gpt--symbol-at-point)))
     (unless (vhdl-gpt--jump-to-decl symbol)
       (message "Declaration for '%s' not found" symbol))))
+
+;;; Overloaded subprogram declaration finding
+
+(defun vhdl-find-decl--find-close-paren-from (pos)
+  "Scan from POS (just inside an open paren, depth=1) and return position of matching ')'.
+Returns nil if no matching paren is found before end of buffer."
+  (save-excursion
+    (goto-char pos)
+    (let ((depth 1))
+      (while (and (< (point) (point-max)) (> depth 0))
+        (let ((ch (char-after)))
+          (cond
+           ((= ch ?\() (setq depth (1+ depth)) (forward-char))
+           ((= ch ?\))
+            (setq depth (1- depth))
+            (unless (= depth 0) (forward-char)))
+           (t (forward-char)))))
+      (when (= depth 0) (point)))))
+
+(defun vhdl-find-decl--split-args (str)
+  "Split comma-separated argument string STR, respecting nested parens.
+Returns list of trimmed non-empty argument strings."
+  (let ((result '())
+        (buf "")
+        (depth 0))
+    (dotimes (i (length str))
+      (let ((ch (aref str i)))
+        (cond
+         ((= ch ?\() (setq depth (1+ depth)) (setq buf (concat buf (string ch))))
+         ((= ch ?\)) (setq depth (1- depth)) (setq buf (concat buf (string ch))))
+         ((and (= ch ?,) (= depth 0))
+          (let ((s (string-trim buf)))
+            (when (> (length s) 0) (push s result)))
+          (setq buf ""))
+         (t (setq buf (concat buf (string ch)))))))
+    (let ((s (string-trim buf)))
+      (when (> (length s) 0) (push s result)))
+    (nreverse result)))
+
+(defun vhdl-find-decl--call-enclosing ()
+  "Return (NAME . ARG-LIST) for the function/procedure call enclosing point.
+Scans backward to find an opening paren with an identifier before it.
+Returns nil if point is not inside a call."
+  (save-excursion
+    (let ((depth 0)
+          open-pos)
+      (while (and (> (point) (point-min)) (null open-pos))
+        (backward-char)
+        (let ((ch (char-after)))
+          (cond
+           ((= ch ?\)) (setq depth (1+ depth)))
+           ((= ch ?\()
+            (if (> depth 0)
+                (setq depth (1- depth))
+              (setq open-pos (point)))))))
+      (when open-pos
+        (goto-char open-pos)
+        (skip-chars-backward " \t\n")
+        (let ((end (point)))
+          (skip-chars-backward "a-zA-Z0-9_.")
+          (let ((start (point)))
+            (when (< start end)
+              (let* ((name (buffer-substring-no-properties start end))
+                     (args-start (1+ open-pos))
+                     (close-pos (vhdl-find-decl--find-close-paren-from args-start))
+                     (args-str (when close-pos
+                                 (buffer-substring-no-properties args-start close-pos)))
+                     (args (if args-str (vhdl-find-decl--split-args args-str) '())))
+                (cons name args)))))))))
+
+(defun vhdl-find-decl--call-at-point ()
+  "Return (NAME . ARG-LIST) for a function/procedure call starting at point.
+Looks for an identifier at point followed by '('.
+Returns nil if not found."
+  (save-excursion
+    (skip-chars-backward "a-zA-Z0-9_.")
+    (when (looking-at "\\([a-zA-Z][a-zA-Z0-9_.]*\\)[ \t\n]*(")
+      (let* ((name (match-string-no-properties 1))
+             (args-start (match-end 0))
+             (close-pos (vhdl-find-decl--find-close-paren-from args-start))
+             (args-str (when close-pos
+                         (buffer-substring-no-properties args-start close-pos)))
+             (args (if args-str (vhdl-find-decl--split-args args-str) '())))
+        (cons name args)))))
+
+(defun vhdl-find-decl--base-type (type-str)
+  "Extract the base type name from TYPE-STR, dropping range qualifiers."
+  (let ((s (string-trim (or type-str ""))))
+    (cond
+     ((string-match "^\\([a-zA-Z][a-zA-Z0-9_]*\\)\\s-*(" s) (match-string 1 s))
+     ((string-match "^\\([a-zA-Z][a-zA-Z0-9_]*\\)" s) (match-string 1 s))
+     (t s))))
+
+(defun vhdl-find-decl--types-compat-p (actual formal)
+  "Return t if ACTUAL type is compatible with FORMAL type (case-insensitive).
+Handles common VHDL subtype families."
+  (when (and actual formal)
+    (let ((a (downcase (vhdl-find-decl--base-type actual)))
+          (f (downcase (vhdl-find-decl--base-type formal))))
+      (or (string= a f)
+          (and (member a '("std_logic" "std_ulogic"))
+               (member f '("std_logic" "std_ulogic")))
+          (and (member a '("integer" "natural" "positive"))
+               (member f '("integer" "natural" "positive")))
+          (and (member a '("std_logic_vector" "std_ulogic_vector"))
+               (member f '("std_logic_vector" "std_ulogic_vector")))))))
+
+(defun vhdl-find-decl--arg-type (arg)
+  "Determine the VHDL type of actual argument expression ARG.
+Returns a type string or nil if the type cannot be determined."
+  ;; Strip named association syntax: 'formal => actual'
+  (let ((expr (if (string-match "\\s-*=>\\s-*\\(.+\\)$" arg)
+                  (string-trim (match-string 1 arg))
+                (string-trim arg))))
+    (cond
+     ;; Simple identifier: look up its declaration in current buffer
+     ((string-match "^[a-zA-Z][a-zA-Z0-9_.]*$" expr)
+      (save-excursion
+        (goto-char (point-min))
+        (let ((case-fold-search t)
+              found)
+          (while (and (not found)
+                      (re-search-forward
+                       (concat "\\b" (regexp-quote expr) "\\b"
+                               "\\s-*:\\s-*"
+                               "\\(?:\\(?:in\\|out\\|inout\\|buffer\\)\\s-+\\)?"
+                               "\\([a-zA-Z][a-zA-Z0-9_]*\\(?:\\s-*(\\(?:[^)]*\\))\\)?\\)")
+                       nil t))
+            (setq found (string-trim (match-string-no-properties 1))))
+          found)))
+     ;; Integer literal
+     ((string-match "^[0-9]+$" expr) "integer")
+     ;; Bit-string literal: "0101..."
+     ((string-match "^\"[01 ]*\"$" expr) "std_logic_vector")
+     ;; Char literal '0' or '1'
+     ((string-match "^'[01]'$" expr) "std_logic")
+     ;; Boolean literal
+     ((string-match "^\\(true\\|false\\)$" expr) "boolean")
+     ;; Complex expression: type unknown
+     (t nil))))
+
+(defun vhdl-find-decl--parse-params (params-str)
+  "Parse a subprogram formal parameter list PARAMS-STR.
+Returns a list of (MODE BASE-TYPE) for each parameter position,
+expanding multi-name groups like 'a, b : integer' into separate entries."
+  (let ((result '()))
+    (dolist (group (split-string params-str ";" t))
+      (setq group (string-trim group))
+      ;; Each group: 'name1, name2 : [mode] type'
+      (when (string-match "\\([^:]+\\):\\([^\n]*\\)" group)
+        (let* ((names-part (string-trim (match-string 1 group)))
+               (type-part  (string-trim (match-string 2 group)))
+               (mode "in"))
+          (when (string-match
+                 "^\\(in\\|out\\|inout\\|buffer\\)\\s-+\\(.*\\)" type-part)
+            (setq mode     (downcase (match-string 1 type-part)))
+            (setq type-part (string-trim (match-string 2 type-part))))
+          (let* ((base  (vhdl-find-decl--base-type type-part))
+                 (names (mapcar #'string-trim
+                                (split-string names-part "," t))))
+            (dolist (_ names)
+              (push (list mode base) result))))))
+    (nreverse result)))
+
+(defun vhdl-find-decl--collect-in-buffer (name buf)
+  "Return all function/procedure declarations of NAME found in buffer BUF.
+Each entry is a list (POINT PARAMS KIND FILE) where:
+  POINT  - buffer position of the declaration keyword
+  PARAMS - list of (MODE BASE-TYPE) for each formal parameter
+  KIND   - symbol 'function or 'procedure
+  FILE   - absolute path of the file, or nil for unsaved buffers."
+  (let ((result '())
+        (file (buffer-file-name buf))
+        (case-fold-search t))
+    (with-current-buffer buf
+      (save-excursion
+        (dolist (kind-str '("function" "procedure"))
+          (goto-char (point-min))
+          (while (re-search-forward
+                  (concat "\\<" kind-str "\\>"
+                          "[ \t\n]+" (regexp-quote name) "\\b")
+                  nil t)
+            (let ((decl-pt (match-beginning 0)))
+              (skip-chars-forward " \t\n")
+              (when (= (char-after) ?\()
+                (let* ((args-start (1+ (point)))
+                       (close-pt   (vhdl-find-decl--find-close-paren-from args-start))
+                       (params-str (when close-pt
+                                     (buffer-substring-no-properties
+                                      args-start close-pt)))
+                       (params     (vhdl-find-decl--parse-params
+                                    (or params-str ""))))
+                  (push (list decl-pt params (intern kind-str) file) result))))))))
+    (nreverse result)))
+
+(defun vhdl-find-decl--use-packages ()
+  "Return package names declared via 'use work.PKG.all' in the current buffer."
+  (let ((result '())
+        (case-fold-search t))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward
+              (concat "\\<use\\>[ \t]+"
+                      "\\<work\\>[ \t]*\\.[ \t]*"
+                      "\\([a-zA-Z][a-zA-Z0-9_]*\\)"
+                      "[ \t]*\\.[ \t]*\\<all\\>")
+              nil t)
+        (push (match-string-no-properties 1) result)))
+    (nreverse result)))
+
+(defun vhdl-find-declaration-overloaded ()
+  "Find the function/procedure declaration that matches the call at point.
+Handles overloading by matching argument count and, where determinable,
+argument types.  Searches the current buffer first, then imported packages.
+
+When exactly one match is found it jumps there in the other window.
+When multiple matches remain (e.g. unknown argument types) it offers
+a completing-read selection."
+  (interactive)
+  (let* ((call (or (vhdl-find-decl--call-enclosing)
+                   (vhdl-find-decl--call-at-point))))
+    (unless call
+      (user-error "No function or procedure call found at point"))
+    (let* ((name      (car call))
+           (args      (cdr call))
+           (nargs     (length args))
+           (arg-types (mapcar #'vhdl-find-decl--arg-type args))
+           (all-decls (vhdl-find-decl--collect-in-buffer name (current-buffer))))
+      ;; Add declarations from imported package files
+      (dolist (pkg (vhdl-find-decl--use-packages))
+        (let ((pkg-file (vhdl-gpt--package-file pkg)))
+          (when pkg-file
+            (setq all-decls
+                  (append all-decls
+                          (vhdl-find-decl--collect-in-buffer
+                           name (find-file-noselect pkg-file)))))))
+      (when (null all-decls)
+        (user-error "No declaration found for '%s'" name))
+      ;; Filter 1: argument count must match
+      (let* ((by-count (seq-filter
+                        (lambda (d) (= (length (nth 1 d)) nargs))
+                        all-decls))
+             ;; Filter 2: type compatibility where actual types are known
+             ;;           Fall back to count-only filter if type filter yields nothing.
+             (candidates
+              (or (seq-filter
+                   (lambda (d)
+                     (let ((params (nth 1 d)))
+                       (cl-every
+                        (lambda (i)
+                          (let ((atype (nth i arg-types))
+                                (ftype (nth 1 (nth i params))))
+                            (or (null atype)
+                                (vhdl-find-decl--types-compat-p atype ftype))))
+                        (number-sequence 0 (1- nargs)))))
+                   by-count)
+                  by-count)))
+        (if (null candidates)
+            (user-error
+             "No declaration for '%s' with %d arg(s) found (%d total declaration(s))"
+             name nargs (length all-decls))
+          (let* ((decl
+                  (if (= (length candidates) 1)
+                      (car candidates)
+                    ;; Multiple candidates: let user choose
+                    (let* ((choices
+                            (mapcar
+                             (lambda (d)
+                               (let* ((params (nth 1 d))
+                                      (kind   (nth 2 d))
+                                      (file   (nth 3 d))
+                                      (sig    (mapconcat
+                                               (lambda (p)
+                                                 (format "%s %s" (nth 0 p) (nth 1 p)))
+                                               params ", ")))
+                                 (format "%s %s(%s)  [%s]"
+                                         kind name sig
+                                         (if file
+                                             (file-name-nondirectory file)
+                                           "current buffer"))))
+                             candidates))
+                           (chosen (completing-read
+                                    (format "Multiple '%s' declarations: " name)
+                                    choices nil t)))
+                      (nth (cl-position chosen choices :test #'string=)
+                           candidates))))
+                 (pt   (nth 0 decl))
+                 (file (nth 3 decl)))
+            (if (and file (not (string= file (or (buffer-file-name) ""))))
+                (find-file-other-window file)
+              (switch-to-buffer-other-window (current-buffer)))
+            (goto-char pt)
+            (message "Found '%s' declaration with %d arg(s)" name nargs)))))))
 
 (provide 'vhdl-gpt)
 ;;; vhdl-gpt.el ends here
