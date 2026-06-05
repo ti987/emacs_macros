@@ -1,5 +1,16 @@
 ;;; vhdl-gpt.el --- VHDL Helper for Jumping to Declarations -*- lexical-binding: t -*-
 
+;; Commands (interactive functions):
+;; - vhdl-gpt-jump-to-declaration
+;;
+;; Functions:
+;; - vhdl-gpt--symbol-at-point
+;; - vhdl-gpt--package-file
+;; - vhdl-gpt--search-decl
+;; - vhdl-gpt--search-type
+;; - vhdl-gpt--jump-to-decl
+;; - vhdl-gpt--resolve-package
+
 ;; Version: 0.2
 ;; If the type declaration is found in the current file, it now:
 ;;
